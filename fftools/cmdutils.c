@@ -82,6 +82,26 @@ enum show_muxdemuxers {
     SHOW_MUXERS,
 };
 
+#if CONFIG_LIBXMA2API
+int opt_xlnx_hwdev(void *optctx, const char *opt, const char *arg)
+{
+   int ret = -1, val = -1;
+
+   val = atoi(arg);
+   if (val)
+      ret = setenv("XRM_DEVICE_ID", arg, 0);
+   else
+      ret = setenv("XRM_DEVICE_ID", "0", 0);
+
+   if (ret) 
+   {
+      av_log(NULL, AV_LOG_ERROR, "Unable to set XRM_DEVICE_ID through %s option. \n", opt);      
+      exit_program(1);
+   }
+   return 0;   
+}
+#endif
+
 void init_opts(void)
 {
     av_dict_set(&sws_dict, "flags", "bicubic", 0);

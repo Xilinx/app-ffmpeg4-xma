@@ -894,6 +894,13 @@ int av_frame_apply_cropping(AVFrame *frame, int flags);
  */
 const char *av_frame_side_data_name(enum AVFrameSideDataType type);
 
+#if CONFIG_LIBXVBM
+#include <app/xmabuffers.h>
+
+int av_frame_clone_xma_frame (AVFrame *frame, XmaFrame *xframe);
+XmaFrame *av_frame_get_xma_frame (AVFrame *frame);
+#endif
+
 /**
  * @}
  */
