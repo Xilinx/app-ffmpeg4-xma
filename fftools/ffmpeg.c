@@ -40,6 +40,10 @@
 #include <unistd.h>
 #endif
 
+#include <xma.h>
+#include <xrm.h>
+#include <uuid/uuid.h>
+#include <experimental/xrt_xclbin.h> // </opt/xilinx/xrt/include/experimental/xrt_xclbin.h>
 #include "libavformat/avformat.h"
 #include "libavdevice/avdevice.h"
 #include "libswresample/swresample.h"
@@ -100,11 +104,14 @@
 #endif
 
 #include <time.h>
+#include <syslog.h>
 
 #include "ffmpeg.h"
 #include "cmdutils.h"
 
 #include "libavutil/avassert.h"
+
+#define xrm_str_size (64)
 
 const char program_name[] = "ffmpeg";
 const int program_birth_year = 2000;
@@ -156,7 +163,6 @@ int         nb_output_files   = 0;
 
 FilterGraph **filtergraphs;
 int        nb_filtergraphs;
-
 #if HAVE_TERMIOS_H
 
 /* init terminal so that we can grab keys */
@@ -2670,6 +2676,9 @@ static int process_input_packet(InputStream *ist, const AVPacket *pkt, int no_eo
             if (decode_failed) {
                 av_log(NULL, AV_LOG_ERROR, "Error while decoding stream #%d:%d: %s\n",
                        ist->file_index, ist->st->index, av_err2str(ret));
+		/* VCU can throw error at data send stage due to insufficient processing power.
+		 * We dont want to retry, but call cleanup callback and exit */
+                exit_program(1);
             } else {
                 av_log(NULL, AV_LOG_FATAL, "Error while processing the decoded "
                        "data for stream #%d:%d\n", ist->file_index, ist->st->index);
@@ -4841,8 +4850,15 @@ static void log_callback_null(void *ptr, int level, const char *fmt, va_list vl)
 
 int main(int argc, char **argv)
 {
-    int i, ret;
+    int i=0, ret, xrm_reserve_id;
     BenchmarkTimeStamps ti;
+
+    struct timespec latency;
+    long long int time_taken;
+    clock_gettime (CLOCK_REALTIME, &latency);
+    time_taken = (latency.tv_sec * 1e3) + (latency.tv_nsec / 1e6);
+    openlog ("FFmpeg", LOG_PID, LOG_USER);
+    syslog(LOG_DEBUG, "FFmpeg start : %lld\n", time_taken);
 
     init_dynload();
 
@@ -4867,10 +4883,91 @@ int main(int argc, char **argv)
 
     show_banner(argc, argv, options);
 
+#if CONFIG_LIBXMA2API
+//////////////////////////// XRM SETUP////////////////////////
+    av_log (NULL, AV_LOG_INFO, "\n<<<<<<<==  FFmpeg xrm ===>>>>>>>>\n");
+    xrmContext *xrm_ctx = (xrmContext *)xrmCreateContext(XRM_API_VERSION_1);
+    if (xrm_ctx == NULL)
+    {
+       av_log(NULL, AV_LOG_ERROR, "create local XRM context failed\n");
+       exit_program(1);
+    }
+    
+    XmaXclbinParameter xclbin_param;
+
+    if (getenv("XRM_RESERVE_ID"))
+    {
+       //Query the XRM reserved device resource to use 
+       xrmCuPoolResource query_transcode_cu_pool_res;        
+       memset(&query_transcode_cu_pool_res, 0, sizeof(query_transcode_cu_pool_res));
+
+       xrm_reserve_id = atoi(getenv("XRM_RESERVE_ID"));
+
+       ret = xrmReservationQuery(xrm_ctx, xrm_reserve_id, &query_transcode_cu_pool_res);    
+       if (ret != 0)
+       {
+          av_log(NULL, AV_LOG_ERROR, "xrm_reservation_query: fail to query allocated cu list\n");          
+          exit_program(1);
+       }
+       else
+       {
+          if (query_transcode_cu_pool_res.cuNum > 0)
+          {
+             //XCLBIN configuration
+             xclbin_param.device_id = query_transcode_cu_pool_res.cuResources[i].deviceId;
+             xclbin_param.xclbin_name = query_transcode_cu_pool_res.cuResources[i].xclbinFileName; 
+
+             av_log (NULL, AV_LOG_INFO, "------------------------------------------------------------\n\n");
+             av_log (NULL, AV_LOG_INFO, "   xclbin_name :  %s\n", query_transcode_cu_pool_res.cuResources[i].xclbinFileName);
+             av_log (NULL, AV_LOG_INFO, "   device_id   :  %d\n\n", query_transcode_cu_pool_res.cuResources[i].deviceId);
+             av_log (NULL, AV_LOG_INFO, "   XRM ReserveId =%d \n", xrm_reserve_id);
+             av_log (NULL, AV_LOG_INFO, "------------------------------------------------------------\n\n");
+           
+             /* Initialize the Xilinx Media Accelerator */
+             if (xma_initialize(&xclbin_param, 1) != 0)
+             {
+                av_log(NULL, AV_LOG_ERROR, "XMA Initialization failed\n");
+                exit_program(1);
+             }
+          }
+          else
+          {
+             //Given XRM_RESERVE_ID is not correct, falling back to XRM_DEVICE_ID flow
+             unsetenv("XRM_RESERVE_ID");            
+          } 
+       }
+    }
+    
+#endif
+
     /* parse options and open all input/output files */
     ret = ffmpeg_parse_options(argc, argv);
     if (ret < 0)
         exit_program(1);
+
+#if CONFIG_LIBXMA2API
+    if (!getenv("XRM_RESERVE_ID"))
+    {
+          if (!getenv("XRM_DEVICE_ID"))
+             setenv("XRM_DEVICE_ID", "0" , 0); //set defualt device to 0
+
+          //XCLBIN configuration
+          xclbin_param.device_id = atoi(getenv("XRM_DEVICE_ID"));
+          xclbin_param.xclbin_name = "/opt/xilinx/xcdr/xclbins/transcode.xclbin"; 
+
+          av_log (NULL, AV_LOG_INFO, "------------------------------------------------------------\n\n");
+          av_log (NULL, AV_LOG_INFO, "   xclbin_name :  %s\n", xclbin_param.xclbin_name);
+          av_log (NULL, AV_LOG_INFO, "   device_id   :  %d \n", xclbin_param.device_id);
+          av_log (NULL, AV_LOG_INFO, "------------------------------------------------------------\n\n");
+
+          /* Initialize the Xilinx Media Accelerator */
+          if (xma_initialize(&xclbin_param, 1) != 0)
+          {
+             av_log(NULL, AV_LOG_ERROR, "ERROR: XMA Initialization failed. Program exiting\n");
+             exit_program(1);
+          }
+    }
+#endif
 
     if (nb_output_files <= 0 && nb_input_files == 0) {
         show_usage();
@@ -4897,6 +4994,7 @@ int main(int argc, char **argv)
     current_time = ti = get_benchmark_time_stamps();
     if (transcode() < 0)
         exit_program(1);
+
     if (do_benchmark) {
         int64_t utime, stime, rtime;
         current_time = get_benchmark_time_stamps();
@@ -4910,8 +5008,10 @@ int main(int argc, char **argv)
     av_log(NULL, AV_LOG_DEBUG, "%"PRIu64" frames successfully decoded, %"PRIu64" decoding errors\n",
            decode_error_stat[0], decode_error_stat[1]);
     if ((decode_error_stat[0] + decode_error_stat[1]) * max_error_rate < decode_error_stat[1])
+    {
         exit_program(69);
+    }
 
-    exit_program(received_nb_signals ? 255 : main_return_code);
-    return main_return_code;
+  exit_program(received_nb_signals ? 255 : main_return_code);
+  return main_return_code;
 }

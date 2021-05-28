@@ -84,6 +84,7 @@ static int is_supported(enum AVCodecID id)
     case AV_CODEC_ID_MJPEG:
     case AV_CODEC_ID_SPEEX:
     case AV_CODEC_ID_OPUS:
+    case AV_CODEC_ID_RAWVIDEO:
         return 1;
     default:
         return 0;
@@ -101,6 +102,7 @@ static int rtp_write_header(AVFormatContext *s1)
         return AVERROR(EINVAL);
     }
     st = s1->streams[0];
+
     if (!is_supported(st->codecpar->codec_id)) {
         av_log(s1, AV_LOG_ERROR, "Unsupported codec %s\n", avcodec_get_name(st->codecpar->codec_id));
 
@@ -522,7 +524,6 @@ static int rtp_write_packet(AVFormatContext *s1, AVPacket *pkt)
     int size= pkt->size;
 
     av_log(s1, AV_LOG_TRACE, "%d: write len=%d\n", pkt->stream_index, size);
-
     rtcp_bytes = ((s->octet_count - s->last_octet_count) * RTCP_TX_RATIO_NUM) /
         RTCP_TX_RATIO_DEN;
     if ((s->first_packet || ((rtcp_bytes >= RTCP_SR_SIZE) &&
@@ -628,8 +629,9 @@ static int rtp_write_packet(AVFormatContext *s1, AVPacket *pkt)
         }
         /* Intentional fallthrough */
     default:
+        ff_rtp_send_raw_rfc4175 (s1, pkt->data, size);
         /* better than nothing : send the codec raw data */
-        rtp_send_raw(s1, pkt->data, size);
+        //rtp_send_raw(s1, pkt->data, size);
         break;
     }
     return 0;

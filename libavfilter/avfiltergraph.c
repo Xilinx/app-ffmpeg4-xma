@@ -411,8 +411,10 @@ static int can_merge_formats(AVFilterFormats *a_arg,
     if (is_sample_rate) {
         ret = ff_merge_samplerates(a, b);
     } else {
+
         ret = ff_merge_formats(a, b, type);
     }
+
     if (ret) {
         av_freep(&ret->formats);
         av_freep(&ret->refs);
@@ -474,8 +476,9 @@ static int query_formats(AVFilterGraph *graph, AVClass *log_ctx)
             if (link->in_formats != link->out_formats
                 && link->in_formats && link->out_formats)
                 if (!can_merge_formats(link->in_formats, link->out_formats,
-                                      link->type, 0))
+                                      link->type, 0)) {
                     convert_needed = 1;
+            }
             if (link->type == AVMEDIA_TYPE_AUDIO) {
                 if (link->in_samplerates != link->out_samplerates
                     && link->in_samplerates && link->out_samplerates)
@@ -566,6 +569,7 @@ static int query_formats(AVFilterGraph *graph, AVClass *log_ctx)
                 if ((ret = avfilter_insert_filter(link, convert, 0, 0)) < 0)
                     return ret;
 
+
                 if ((ret = filter_query_formats(convert)) < 0)
                     return ret;
 
@@ -585,6 +589,8 @@ static int query_formats(AVFilterGraph *graph, AVClass *log_ctx)
                     av_assert0(outlink-> in_channel_layouts->refcount > 0);
                     av_assert0(outlink->out_channel_layouts->refcount > 0);
                 }
+
+
                 if (!ff_merge_formats( inlink->in_formats,  inlink->out_formats,  inlink->type) ||
                     !ff_merge_formats(outlink->in_formats, outlink->out_formats, outlink->type))
                     ret = AVERROR(ENOSYS);

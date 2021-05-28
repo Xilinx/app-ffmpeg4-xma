@@ -48,7 +48,6 @@ AVFrame *ff_default_get_video_buffer(AVFilterLink *link, int w, int h)
     int pool_height = 0;
     int pool_align = 0;
     enum AVPixelFormat pool_format = AV_PIX_FMT_NONE;
-
     if (link->hw_frames_ctx &&
         ((AVHWFramesContext*)link->hw_frames_ctx->data)->format == link->format) {
         int ret;
@@ -65,11 +64,15 @@ AVFrame *ff_default_get_video_buffer(AVFilterLink *link, int w, int h)
     }
 
     if (!link->frame_pool) {
+
         link->frame_pool = ff_frame_pool_video_init(av_buffer_allocz, w, h,
                                                     link->format, BUFFER_ALIGN);
-        if (!link->frame_pool)
+        if (!link->frame_pool) {
+            printf ("retuning frame pool nulll....\n");
             return NULL;
+        }
     } else {
+
         if (ff_frame_pool_get_video_config(link->frame_pool,
                                            &pool_width, &pool_height,
                                            &pool_format, &pool_align) < 0) {
