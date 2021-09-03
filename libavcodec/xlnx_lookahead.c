@@ -151,6 +151,14 @@ static int32_t free_res(xlnx_la_ctx *la_ctx)
         return XMA_ERROR;
     }
 
+    // Close lookahead session
+    if (la_ctx->filter_session) {
+        xma_filter_session_destroy(la_ctx->filter_session);
+        la_ctx->filter_session = NULL;
+    }
+    free_frame(la_ctx->out_frame);
+    la_ctx->out_frame = NULL;
+
     if (getenv("XRM_RESERVE_ID")) {
         int xrm_reserve_id = atoi(getenv("XRM_RESERVE_ID"));
 
@@ -163,14 +171,6 @@ static int32_t free_res(xlnx_la_ctx *la_ctx)
                 av_log(NULL,AV_LOG_ERROR, "XRM : lookahead destroy context failed\n");
         }
     }
-
-    // Close lookahead session
-    if (la_ctx->filter_session) {
-        xma_filter_session_destroy(la_ctx->filter_session);
-        la_ctx->filter_session = NULL;
-    }
-    free_frame(la_ctx->out_frame);
-    la_ctx->out_frame = NULL;
 
     return XMA_SUCCESS;
 }

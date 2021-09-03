@@ -371,6 +371,17 @@ static av_cold void multiscale_xma_uninit(AVFilterContext *ctx)
     int i;
     MultiScalerContext *s = ctx->priv;
 
+#ifdef DUMP_OUT_FRAMES
+    fclose (outfp);
+    fclose (yfp);
+#endif
+    for (i = 0; i < ctx->nb_outputs; i++)
+        av_freep(&ctx->output_pads[i].name);
+
+       for (int idx=0; idx < s->num_sessions; idx++) {
+          if (s->session[idx])
+            xma_scaler_session_destroy(s->session[idx]);
+       }
     //if (getenv("XRM_RESERVE_ID") && s->xrm_ctx) {
     if (s->xrm_ctx) {
 
@@ -386,18 +397,6 @@ static av_cold void multiscale_xma_uninit(AVFilterContext *ctx)
        if (xrmDestroyContext(s->xrm_ctx) != XRM_SUCCESS)
         av_log(NULL, AV_LOG_ERROR, "XRM : scaler destroy context failed\n");
     }
-
-#ifdef DUMP_OUT_FRAMES
-    fclose (outfp);
-    fclose (yfp);
-#endif
-    for (i = 0; i < ctx->nb_outputs; i++)
-        av_freep(&ctx->output_pads[i].name);
-
-       for (int idx=0; idx < s->num_sessions; idx++) {
-          if (s->session[idx])
-            xma_scaler_session_destroy(s->session[idx]);
-       }
 }
 
 int output_config_props(AVFilterLink *outlink)

@@ -423,6 +423,13 @@ static int32_t init_la(AVCodecContext *avctx)
 static av_cold int mpsoc_vcu_encode_close(AVCodecContext *avctx)
 {
     mpsoc_vcu_enc_ctx *ctx = avctx->priv_data;
+    
+    av_fifo_freep(&ctx->pts_queue);
+    xma_enc_session_destroy(ctx->enc_session);
+    deinit_la(ctx);
+    if(ctx->la_in_frame) free(ctx->la_in_frame);
+	    ctx->la_in_frame = NULL;
+
 
     if (getenv("XRM_RESERVE_ID"))
     {
@@ -444,14 +451,9 @@ static av_cold int mpsoc_vcu_encode_close(AVCodecContext *avctx)
              av_log(avctx, AV_LOG_ERROR, "XRM: failed to release encoder SW cu\n");
     }
 
-    av_fifo_freep(&ctx->pts_queue);
     if (xrmDestroyContext(ctx->xrm_ctx) != XRM_SUCCESS)
        av_log(NULL, AV_LOG_ERROR, "XRM : encoder destroy context failed\n");
 
-     xma_enc_session_destroy(ctx->enc_session);
-    deinit_la(ctx);
-    if(ctx->la_in_frame) free(ctx->la_in_frame);
-    ctx->la_in_frame = NULL;
     return 0;
 }
 

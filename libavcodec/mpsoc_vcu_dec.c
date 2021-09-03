@@ -169,6 +169,7 @@ static av_cold int mpsoc_vcu_decode_close (AVCodecContext *avctx)
         av_fifo_free(ctx->pkt_fifo);
     }
 
+    xma_dec_session_destroy(ctx->dec_session);
 
     if (getenv("XRM_RESERVE_ID"))
     {
@@ -192,7 +193,6 @@ static av_cold int mpsoc_vcu_decode_close (AVCodecContext *avctx)
     if (xrmDestroyContext(ctx->xrm_ctx) != XRM_SUCCESS)
        av_log(avctx, AV_LOG_ERROR, "XRM : decoder destroy context failed\n");
 
-    xma_dec_session_destroy(ctx->dec_session);
     return 0;
 }
 
