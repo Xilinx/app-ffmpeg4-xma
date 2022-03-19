@@ -77,12 +77,15 @@ static int filter_frame(AVFilterLink *inlink, AVFrame *frame)
 {
     AVFilterContext *ctx = inlink->dst;
     int i, ret = AVERROR_EOF;
+    XmaFrame *xframe = NULL;
+    XmaFrame *xframe_clone = NULL;
 
     for (i = 0; i < ctx->nb_outputs; i++) {
         AVFrame *buf_out;
 
         if (ff_outlink_get_status(ctx->outputs[i]))
             continue;
+
         buf_out = av_frame_clone(frame);
         if (!buf_out) {
             ret = AVERROR(ENOMEM);
@@ -93,6 +96,7 @@ static int filter_frame(AVFilterLink *inlink, AVFrame *frame)
         if (ret < 0)
             break;
     }
+
     av_frame_free(&frame);
     return ret;
 }

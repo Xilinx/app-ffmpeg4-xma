@@ -421,6 +421,12 @@ int ff_request_frame(AVFilterLink *link)
             /* Acknowledge status change. Filters using ff_request_frame() will
                handle the change automatically. Filters can also check the
                status directly but none do yet. */
+#if CONFIG_LIBXMA2API
+            if (strcmp(link->dst->filter->name,"multiscale_xma") ==0)
+               xma_multiscaler_filter_flush(link);   //Flush Multiscaler filter pipeline
+            else if (strcmp(link->dst->filter->name,"xvbm_convert") ==0)
+               xvbm_convert_filter_flush(link);     //Flush xvmb_convert filter pipeline
+#endif
             ff_avfilter_link_set_out_status(link, link->status_in, link->status_in_pts);
             return link->status_out;
         }

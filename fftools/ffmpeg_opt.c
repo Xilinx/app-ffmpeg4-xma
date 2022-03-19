@@ -3434,6 +3434,10 @@ const OptionDef options[] = {
         "overwrite output files" },
     { "n",              OPT_BOOL,                                    {              &no_file_overwrite },
         "never overwrite output files" },
+#if CONFIG_LIBXMA2API
+    { "xlnx_hwdev",     HAS_ARG,                                     { .func_arg  = opt_xlnx_hwdev },
+       "set Xilinx device id to be used"  },
+#endif
     { "ignore_unknown", OPT_BOOL,                                    {              &ignore_unknown_streams },
         "Ignore unknown stream types" },
     { "copy_unknown",   OPT_BOOL | OPT_EXPERT,                       {              &copy_unknown_streams },

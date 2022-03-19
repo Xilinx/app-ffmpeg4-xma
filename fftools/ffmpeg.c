@@ -40,6 +40,12 @@
 #include <unistd.h>
 #endif
 
+#include <xma.h>
+#include <xrm.h>
+#include <uuid/uuid.h>
+#include <experimental/xrt_xclbin.h> 
+#include <errno.h>
+
 #include "libavformat/avformat.h"
 #include "libavdevice/avdevice.h"
 #include "libswresample/swresample.h"
@@ -99,12 +105,16 @@
 #include <conio.h>
 #endif
 
+#include <syslog.h>
+
 #include <time.h>
 
 #include "ffmpeg.h"
 #include "cmdutils.h"
 
 #include "libavutil/avassert.h"
+
+#define xrm_str_size (64)
 
 const char program_name[] = "ffmpeg";
 const int program_birth_year = 2000;
@@ -2717,6 +2727,9 @@ static int process_input_packet(InputStream *ist, const AVPacket *pkt, int no_eo
             if (decode_failed) {
                 av_log(NULL, AV_LOG_ERROR, "Error while decoding stream #%d:%d: %s\n",
                        ist->file_index, ist->st->index, av_err2str(ret));
+                /* VCU can throw error at data send stage due to insufficient processing power.
+                 * We dont want to retry, but call cleanup callback and exit */
+                exit_program(1);
             } else {
                 av_log(NULL, AV_LOG_FATAL, "Error while processing the decoded "
                        "data for stream #%d:%d\n", ist->file_index, ist->st->index);
@@ -3463,6 +3476,14 @@ static int init_output_stream_encode(OutputStream *ost, AVFrame *frame)
             enc_ctx->bits_per_raw_sample = frame_bits_per_raw_sample;
         }
 
+#if CONFIG_LIBXMA2API
+	if (dec_ctx) {
+	    enc_ctx->bits_per_raw_sample = av_pix_fmt_desc_get(dec_ctx->pix_fmt)->comp[0].depth;
+	}
+	else {
+	    enc_ctx->bits_per_raw_sample = frame_bits_per_raw_sample;
+	}
+#endif
         if (ost->top_field_first == 0) {
             enc_ctx->field_order = AV_FIELD_BB;
         } else if (ost->top_field_first == 1) {
@@ -4718,6 +4739,9 @@ static int transcode_step(void)
          * of the peeked AVFrame as-is), we could get rid of this additional
          * early encoder initialization.
          */
+        #if CONFIG_LIBXVBM
+        init_output_stream_wrapper(ost, NULL, 1);
+        #endif
         if (av_buffersink_get_type(ost->filter->filter) == AVMEDIA_TYPE_AUDIO)
             init_output_stream_wrapper(ost, NULL, 1);
 
@@ -4953,8 +4977,16 @@ static void log_callback_null(void *ptr, int level, const char *fmt, va_list vl)
 
 int main(int argc, char **argv)
 {
-    int i, ret;
+    int i=0, ret, xrm_reserve_id;
     BenchmarkTimeStamps ti;
+
+    struct timespec latency;
+    long long int time_taken;
+    clock_gettime (CLOCK_REALTIME, &latency);
+    time_taken = (latency.tv_sec * 1e3) + (latency.tv_nsec / 1e6);
+    openlog ("FFmpeg", LOG_PID, LOG_USER);
+    syslog(LOG_DEBUG, "FFmpeg start : %lld\n", time_taken);
+
 
     init_dynload();
 
@@ -4978,6 +5010,119 @@ int main(int argc, char **argv)
     avformat_network_init();
 
     show_banner(argc, argv, options);
+
+#if CONFIG_LIBXMA2API
+//////////////////////////// XRM SETUP////////////////////////
+    av_log (NULL, AV_LOG_INFO, "\n<<<<<<<==  FFmpeg xrm ===>>>>>>>>\n");
+    xrmContext *xrm_ctx = (xrmContext *)xrmCreateContext(XRM_API_VERSION_1);
+    if (xrm_ctx == NULL)
+    {
+       av_log(NULL, AV_LOG_ERROR, "create local XRM context failed\n");
+       exit_program(1);
+    }
+
+    int dev_id = 0, xlnx_num_devs = 0;
+    bool dev_list[MAX_XLNX_DEVS];
+    XmaXclbinParameter xclbin_nparam[MAX_XLNX_DEVS];
+    memset(dev_list, false, MAX_XLNX_DEVS*sizeof(bool));
+
+    if (getenv("XRM_RESERVE_ID"))
+    {
+       //Query the XRM reserved device resource to use
+       xrmCuPoolResourceV2 query_transcode_cu_pool_res;
+       memset(&query_transcode_cu_pool_res, 0, sizeof(query_transcode_cu_pool_res));
+       char* endptr;
+       errno=0;
+       xrm_reserve_id = strtol(getenv("XRM_RESERVE_ID"), &endptr, 0);
+       //check for strtol errors
+       if (errno != 0)
+       {
+           perror("strtol");
+           av_log(NULL, AV_LOG_ERROR, "xrmReservation: fail to use XRM_RESERVE_ID\n");
+           exit_program(1);           
+       } 			   
+
+       xrmReservationQueryInfoV2 reserveQueryInfo;
+       memset(&reserveQueryInfo, 0, sizeof(xrmReservationQueryInfoV2));
+       reserveQueryInfo.poolId = xrm_reserve_id;
+
+       ret = xrmReservationQueryV2(xrm_ctx, &reserveQueryInfo, &query_transcode_cu_pool_res);
+       if (ret != 0) 
+       {
+          av_log(NULL, AV_LOG_ERROR, "xrmReservationQueryV2: fail to query allocated cu list\n");
+          exit_program(1);
+       } 
+       else if (query_transcode_cu_pool_res.cuNum > 0)
+       {
+            for (i = 0; i < query_transcode_cu_pool_res.cuNum; i++) 
+            {
+                dev_id =query_transcode_cu_pool_res.cuResources[i].deviceId;
+                if (dev_id < MAX_XLNX_DEVS) { 
+                    if (dev_list[dev_id] == false) {
+                       xclbin_nparam[xlnx_num_devs].device_id = dev_id;
+                       xclbin_nparam[xlnx_num_devs].xclbin_name = XLNX_XCLBIN_PATH;
+                       dev_list[dev_id] = true;
+                       xlnx_num_devs++;
+                    }
+                }
+                else 
+                {
+                    av_log(NULL, AV_LOG_ERROR, "Invalid device ID %d suppled to Xilinx device command line options.\n", dev_id);
+                    return AVERROR(EINVAL);                                                \
+                }           
+      
+#if 0
+                printf("--------------\nquery the reserved cu pool: cu %d\n", i);
+                printf("   xclbinFileName is:  %s\n", query_transcode_cu_pool_res.cuResources[i].xclbinFileName);
+                printf("   kernelPluginFileName is:  %s\n", query_transcode_cu_pool_res.cuResources[i].kernelPluginFileName);
+                printf("   kernelName is:  %s\n", query_transcode_cu_pool_res.cuResources[i].kernelName);
+                printf("   kernelAlias is:  %s\n", query_transcode_cu_pool_res.cuResources[i].kernelAlias);
+                printf("   instanceName is:  %s\n", query_transcode_cu_pool_res.cuResources[i].instanceName);
+                printf("   cuName is:  %s\n", query_transcode_cu_pool_res.cuResources[i].cuName);
+                printf("   deviceId is:  %d\n", query_transcode_cu_pool_res.cuResources[i].deviceId);
+                printf("   cuId is:  %d\n", query_transcode_cu_pool_res.cuResources[i].cuId);
+                printf("   cuType is:  %d\n", query_transcode_cu_pool_res.cuResources[i].cuType);
+                printf("   baseAddr is:  0x%lx\n", query_transcode_cu_pool_res.cuResources[i].baseAddr);
+                printf("   membankId is:  %d\n", query_transcode_cu_pool_res.cuResources[i].membankId);
+                printf("   membankType is:  %d\n", query_transcode_cu_pool_res.cuResources[i].membankType);
+                printf("   membankSize is:  0x%lx\n", query_transcode_cu_pool_res.cuResources[i].membankSize);
+                printf("   membankBaseAddr is:  0x%lx\n", query_transcode_cu_pool_res.cuResources[i].membankBaseAddr);
+                printf("   poolId is:  %lu\n", query_transcode_cu_pool_res.cuResources[i].poolId);
+#endif
+            }
+		  
+            if (xlnx_num_devs > MAX_XLNX_DEVICES_PER_CMD)
+            {
+                av_log(NULL, AV_LOG_ERROR, "ERROR: ffmpeg command is requesting for  %d devices which is more than supported %d devices.\n", xlnx_num_devs, MAX_XLNX_DEVICES_PER_CMD);
+                return AVERROR(EINVAL);                                                \
+            }  			  
+		  
+            /* Initialize the Xilinx Media Accelerator */
+            for (int nd=0; nd<xlnx_num_devs; nd++)
+                printf("xclbin[%d] dev_id=%d\n", nd,xclbin_nparam[nd].device_id);
+
+            if (xma_initialize(xclbin_nparam, xlnx_num_devs) != 0)
+            {
+               av_log(NULL, AV_LOG_ERROR, "XMA Initialization failed\n");
+               exit_program(1);
+            }
+       }
+       else
+       {
+            //Given XRM_RESERVE_ID is not correct, falling back to XRM_DEVICE_ID flow
+            unsetenv("XRM_RESERVE_ID");
+            av_log(NULL, AV_LOG_ERROR, "Wrong XRM reserve ID\n");
+            exit_program(1);
+       }
+    }
+
+    //Destroy XRM context created for querry
+    if (xrmDestroyContext(xrm_ctx) != XRM_SUCCESS)
+       av_log(NULL, AV_LOG_ERROR, "XRM : Query destroy context failed\n");
+
+
+#endif
+
 
     /* parse options and open all input/output files */
     ret = ffmpeg_parse_options(argc, argv);

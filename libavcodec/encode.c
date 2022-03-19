@@ -632,9 +632,11 @@ FF_ENABLE_DEPRECATION_WARNINGS
         const AVPixFmtDescriptor *pixdesc = av_pix_fmt_desc_get(avctx->pix_fmt);
         if (    avctx->bits_per_raw_sample < 0
             || (avctx->bits_per_raw_sample > 8 && pixdesc->comp[0].depth <= 8)) {
+#if !CONFIG_LIBXMA2API
             av_log(avctx, AV_LOG_WARNING, "Specified bit depth %d not possible with the specified pixel formats depth %d\n",
                 avctx->bits_per_raw_sample, pixdesc->comp[0].depth);
             avctx->bits_per_raw_sample = pixdesc->comp[0].depth;
+#endif
         }
         if (avctx->width <= 0 || avctx->height <= 0) {
             av_log(avctx, AV_LOG_ERROR, "dimensions not set\n");

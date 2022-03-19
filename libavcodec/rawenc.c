@@ -35,6 +35,16 @@
 static av_cold int raw_encode_init(AVCodecContext *avctx)
 {
     const AVPixFmtDescriptor *desc = av_pix_fmt_desc_get(avctx->pix_fmt);
+#if CONFIG_LIBXVBM
+    if (avctx->pix_fmt == AV_PIX_FMT_XVBM_8) {
+        av_log (avctx, AV_LOG_ERROR, "XVBM_8 export to rawvideo not supported! Use xvbm_convert filter!\n");
+        return AVERROR(EINVAL);
+    }
+    if (avctx->pix_fmt == AV_PIX_FMT_XVBM_10) {
+        av_log (avctx, AV_LOG_ERROR, "XVBM_10 export to rawvideo not supported! Use xvbm_convert filter!\n");
+        return AVERROR(EINVAL);
+    }
+#endif
 
 #if FF_API_CODED_FRAME
 FF_DISABLE_DEPRECATION_WARNINGS

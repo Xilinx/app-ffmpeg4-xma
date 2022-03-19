@@ -88,6 +88,7 @@ enum AVPixelFormat {
     AV_PIX_FMT_RGB4_BYTE, ///< packed RGB 1:2:1,  8bpp, (msb)1R 2G 1B(lsb)
     AV_PIX_FMT_NV12,      ///< planar YUV 4:2:0, 12bpp, 1 plane for Y and 1 plane for the UV components, which are interleaved (first byte U and the following byte V)
     AV_PIX_FMT_NV21,      ///< as above, but U and V bytes are swapped
+    AV_PIX_FMT_XV15,      ///< 10 bpp NV12 with 3 pixels packed into 32 bit words, 2 MSB are empty.
 
     AV_PIX_FMT_ARGB,      ///< packed ARGB 8:8:8:8, 32bpp, ARGBARGB...
     AV_PIX_FMT_RGBA,      ///< packed RGBA 8:8:8:8, 32bpp, RGBARGBA...
@@ -360,6 +361,8 @@ enum AVPixelFormat {
 
     AV_PIX_FMT_X2RGB10LE, ///< packed RGB 10:10:10, 30bpp, (msb)2X 10R 10G 10B(lsb), little-endian, X=unused/undefined
     AV_PIX_FMT_X2RGB10BE, ///< packed RGB 10:10:10, 30bpp, (msb)2X 10R 10G 10B(lsb), big-endian, X=unused/undefined
+    AV_PIX_FMT_XVBM_8,    ///< Xilinx Video Buffer Format for 8bit Zero Copy
+    AV_PIX_FMT_XVBM_10,   ///< Xilinx Video Buffer Format for 10bit Zero Copy
     AV_PIX_FMT_NB         ///< number of pixel formats, DO NOT USE THIS if you want to link with shared libav* because the number of formats might differ between versions
 };
 

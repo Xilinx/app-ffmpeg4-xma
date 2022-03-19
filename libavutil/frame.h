@@ -198,6 +198,11 @@ enum AVFrameSideDataType {
      * Must be present for every frame which should have film grain applied.
      */
     AV_FRAME_DATA_FILM_GRAIN_PARAMS,
+
+    /**
+     * Xilinx XMA frame side data.
+     */
+    AV_FRAME_XLNX_HDR_SIDEBAND_DATA,
 };
 
 enum AVActiveFormatDescription {
@@ -989,6 +994,13 @@ int av_frame_apply_cropping(AVFrame *frame, int flags);
  * @return a string identifying the side data type
  */
 const char *av_frame_side_data_name(enum AVFrameSideDataType type);
+
+#if CONFIG_LIBXVBM
+#include <app/xmabuffers.h>
+
+int av_frame_clone_xma_frame (AVFrame *frame, XmaFrame *xframe);
+XmaFrame *av_frame_get_xma_frame (AVFrame *frame);
+#endif
 
 /**
  * @}

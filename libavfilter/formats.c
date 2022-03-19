@@ -115,6 +115,13 @@ static int merge_formats_internal(AVFilterFormats *a, AVFilterFormats *b,
             for (j = 0; j < b->nb_formats; j++) {
                 const AVPixFmtDescriptor *adesc = av_pix_fmt_desc_get(a->formats[i]);
                 const AVPixFmtDescriptor *bdesc = av_pix_fmt_desc_get(b->formats[j]);
+                #if CONFIG_LIBXMA2API
+                if(!adesc || !bdesc) {
+                    av_log(NULL, AV_LOG_ERROR, "Unable to merge pixel formats %d, %d\n",
+                           a->formats[i], b->formats[j]);
+                    return AVERROR(EINVAL);
+                }
+                #endif
                 alpha2 |= adesc->flags & bdesc->flags & AV_PIX_FMT_FLAG_ALPHA;
                 chroma2|= adesc->nb_components > 1 && bdesc->nb_components > 1;
                 if (a->formats[i] == b->formats[j]) {

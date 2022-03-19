@@ -34,6 +34,12 @@
 #undef main /* We don't want SDL to override our main() */
 #endif
 
+
+#if CONFIG_LIBXMA2API
+#define MAX_XLNX_DEVS 128
+#define XLNX_XCLBIN_PATH "/opt/xilinx/xcdr/xclbins/transcode.xclbin"
+#define MAX_XLNX_DEVICES_PER_CMD 2
+#endif
 /**
  * program name, defined by the program for show_version().
  */
@@ -104,6 +110,10 @@ int opt_report(void *optctx, const char *opt, const char *arg);
 int opt_max_alloc(void *optctx, const char *opt, const char *arg);
 
 int opt_codec_debug(void *optctx, const char *opt, const char *arg);
+
+#if CONFIG_LIBXMA2API
+int opt_xlnx_hwdev(void *optctx, const char *opt, const char *arg);
+#endif
 
 /**
  * Limit the execution time.

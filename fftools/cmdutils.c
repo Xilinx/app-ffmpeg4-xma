@@ -29,6 +29,7 @@
    Studio) will not omit unused inline functions and create undefined
    references to libraries that are not being built. */
 
+#include "xma.h"
 #include "config.h"
 #include "compat/va_copy.h"
 #include "libavformat/avformat.h"
@@ -78,6 +79,49 @@ enum show_muxdemuxers {
     SHOW_DEMUXERS,
     SHOW_MUXERS,
 };
+
+#if CONFIG_LIBXMA2API
+
+int opt_xlnx_hwdev(void *optctx, const char *opt, const char *arg)
+{
+   int ret = -1, val = -1;
+
+   val = atoi(arg);
+   if (val)
+      ret = setenv("XRM_DEVICE_ID", arg, 0);
+   else
+      ret = setenv("XRM_DEVICE_ID", "0", 0);
+
+   if (ret)
+   {
+      av_log(NULL, AV_LOG_ERROR, "Unable to set XRM_DEVICE_ID through %s option. \n", opt);
+      exit_program(1);
+   }
+   return 0;
+}
+
+static void xlnx_hwdev_init(int xlnx_num_devs, XmaXclbinParameter *xclbin_nparam )
+{
+    int i = 0;
+    for(i=0; i< xlnx_num_devs;i++)
+    {
+        av_log (NULL, AV_LOG_INFO, "------------------i=%d------------------------------------------\n\n",i);
+        av_log (NULL, AV_LOG_INFO, "   xclbin_name :  %s\n", xclbin_nparam[i].xclbin_name);
+        av_log (NULL, AV_LOG_INFO, "   device_id   :  %d \n", xclbin_nparam[i].device_id);
+        av_log (NULL, AV_LOG_INFO, "------------------------------------------------------------\n\n");
+    }
+
+    /* Initialize the Xilinx Media Accelerator */
+    if (xma_initialize(xclbin_nparam, xlnx_num_devs) != 0)
+    {
+       av_log(NULL, AV_LOG_ERROR, "ERROR: XMA Initialization failed. Program exiting\n");
+       exit_program(1);
+    }
+}
+
+
+#endif
+
 
 void init_opts(void)
 {
@@ -752,6 +796,12 @@ int split_commandline(OptionParseContext *octx, int argc, char *argv[],
 {
     int optindex = 1;
     int dashdash = -2;
+#if CONFIG_LIBXMA2API	
+    int dev_id = 0, xlnx_num_devs = 0;
+    bool dev_list[MAX_XLNX_DEVS];
+    XmaXclbinParameter xclbin_nparam[MAX_XLNX_DEVS];
+    memset(dev_list, false, MAX_XLNX_DEVS*sizeof(bool));
+#endif	
 
     /* perform system-dependent conversions for arguments list */
     prepare_app_arguments(&argc, &argv);
@@ -763,6 +813,43 @@ int split_commandline(OptionParseContext *octx, int argc, char *argv[],
         const char *opt = argv[optindex++], *arg;
         const OptionDef *po;
         int ret;
+
+#if CONFIG_LIBXMA2API
+        if (strcmp(opt, "-filter_complex") == 0)
+        {
+           char* ptr_sc;
+           ptr_sc = strstr(argv[optindex],"lxlnx_hwdev=");
+           if (ptr_sc != NULL)
+           {
+              sscanf(ptr_sc, "lxlnx_hwdev=%d", &dev_id);
+              if ((dev_id >= 0) && (dev_list[dev_id] == false))
+              {
+                 xclbin_nparam[xlnx_num_devs].device_id = dev_id;
+                 xclbin_nparam[xlnx_num_devs].xclbin_name = XLNX_XCLBIN_PATH;
+                 dev_list[dev_id] = true;
+                 xlnx_num_devs++;
+              }
+           }
+        }        
+        else if((strcmp(opt,"-lxlnx_hwdev") == 0) || (strcmp(opt,"-xlnx_hwdev") == 0))
+        {
+           dev_id = atoi(argv[optindex]);
+           if ((dev_id >= 0) && (dev_id < MAX_XLNX_DEVS)) { 
+              if (dev_list[dev_id] == false)
+              {
+                  xclbin_nparam[xlnx_num_devs].device_id = dev_id;
+                  xclbin_nparam[xlnx_num_devs].xclbin_name = XLNX_XCLBIN_PATH;
+                  dev_list[dev_id] = true;
+                  xlnx_num_devs++;
+              }
+           }          
+           else 
+              {
+                 av_log(NULL, AV_LOG_ERROR, "Invalid device ID %d suppled to Xilinx device command line options.\n", dev_id);
+                 return AVERROR(EINVAL);                                                \
+           }
+        }
+#endif
 
         av_log(NULL, AV_LOG_DEBUG, "Reading option '%s' ...", opt);
 
@@ -842,6 +929,30 @@ do {                                                                           \
         av_log(NULL, AV_LOG_ERROR, "Unrecognized option '%s'.\n", opt);
         return AVERROR_OPTION_NOT_FOUND;
     }
+
+#if CONFIG_LIBXMA2API
+    if (xlnx_num_devs == 0)
+    {
+       if ((!getenv("XRM_DEVICE_ID")) && (!getenv("XRM_RESERVE_ID")))//TODO:check if this additional condition is needed
+       {
+         setenv("XRM_DEVICE_ID", "0" , 0); //set defualt device to 0
+         xclbin_nparam[xlnx_num_devs].device_id = dev_id;
+         xclbin_nparam[xlnx_num_devs].xclbin_name = XLNX_XCLBIN_PATH;
+         xlnx_num_devs++;
+         av_log(NULL, AV_LOG_WARNING, "No device set hence falling to default device 0\n");
+       }
+    }     		
+    else if (xlnx_num_devs > MAX_XLNX_DEVICES_PER_CMD)
+    {
+        av_log(NULL, AV_LOG_ERROR, "ERROR: ffmpeg command is requesting for  %d devices which is more than supported %d devices.\n", xlnx_num_devs, MAX_XLNX_DEVICES_PER_CMD);
+        return AVERROR(EINVAL); 
+     }
+
+    if (!getenv("XRM_RESERVE_ID"))
+    {
+       xlnx_hwdev_init(xlnx_num_devs, xclbin_nparam );    
+    }
+#endif
 
     if (octx->cur_group.nb_opts || codec_opts || format_opts || resample_opts)
         av_log(NULL, AV_LOG_WARNING, "Trailing option(s) found in the "

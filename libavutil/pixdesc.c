@@ -523,6 +523,42 @@ static const AVPixFmtDescriptor av_pix_fmt_descriptors[AV_PIX_FMT_NB] = {
         },
         .flags = AV_PIX_FMT_FLAG_PLANAR,
     },
+    [AV_PIX_FMT_XV15] = {
+        .name = "xv15",
+        .nb_components = 3,
+        .log2_chroma_w = 0,
+        .log2_chroma_h = 1,
+        .comp = {
+            { 0, 4, 0, 0, 10, 1, 9, 1 },        /* Y */
+            { 1, 4, 1, 0, 10, 1, 9, 1 },        /* U */
+            { 1, 4, 1, 0, 10, 1, 9, 1 },        /* V */
+        },
+        .flags = AV_PIX_FMT_FLAG_PLANAR, //get_video_buffer
+    },
+    [AV_PIX_FMT_XVBM_8] = {
+        .name = "xlnx_xvbm_8",
+        .nb_components = 3,
+        .log2_chroma_w = 1,
+        .log2_chroma_h = 1,
+        .comp = {
+            { 0, 1, 0, 0, 8, 0, 7, 1 },        /* Y */
+            { 1, 2, 0, 0, 8, 1, 7, 1 },        /* U */
+            { 1, 2, 1, 0, 8, 1, 7, 2 },        /* V */
+        },
+        .flags = AV_PIX_FMT_FLAG_HWACCEL,
+    },
+    [AV_PIX_FMT_XVBM_10] = {
+        .name = "xlnx_xvbm_10",
+        .nb_components = 3,
+        .log2_chroma_w = 1,
+        .log2_chroma_h = 1,
+        .comp = {
+            { 0, 1, 0, 0, 10, 0, 9, 1 },        /* Y */
+            { 1, 2, 0, 0, 10, 1, 9, 1 },        /* U */
+            { 1, 2, 1, 0, 10, 1, 9, 2 },        /* V */
+        },
+        .flags = AV_PIX_FMT_FLAG_HWACCEL,
+    },
     [AV_PIX_FMT_NV21] = {
         .name = "nv21",
         .nb_components = 3,

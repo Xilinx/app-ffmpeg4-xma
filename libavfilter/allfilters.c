@@ -463,12 +463,15 @@ extern AVFilter ff_vf_xfade;
 extern AVFilter ff_vf_xfade_opencl;
 extern AVFilter ff_vf_xmedian;
 extern AVFilter ff_vf_xstack;
+extern AVFilter ff_vf_xvbm_convert;
 extern AVFilter ff_vf_yadif;
 extern AVFilter ff_vf_yadif_cuda;
 extern AVFilter ff_vf_yaepblur;
 extern AVFilter ff_vf_zmq;
 extern AVFilter ff_vf_zoompan;
 extern AVFilter ff_vf_zscale;
+extern AVFilter ff_vf_multiscale_xma;
+
 
 extern AVFilter ff_vsrc_allrgb;
 extern AVFilter ff_vsrc_allyuv;

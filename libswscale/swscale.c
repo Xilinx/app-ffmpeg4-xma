@@ -22,6 +22,7 @@
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
+#include <stdbool.h>
 
 #include "libavutil/avassert.h"
 #include "libavutil/avutil.h"

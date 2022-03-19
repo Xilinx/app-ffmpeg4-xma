@@ -784,6 +784,7 @@ static int configure_input_video_filter(FilterGraph *fg, InputFilter *ifilter,
     av_freep(&par);
     last_filter = ifilter->filter;
 
+
     if (ist->autorotate) {
         double theta = get_rotation(ist->st);
 

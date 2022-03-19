@@ -99,4 +99,6 @@ void ff_rtp_send_jpeg(AVFormatContext *s1, const uint8_t *buff, int size);
 const uint8_t *ff_h263_find_resync_marker_reverse(const uint8_t *av_restrict start,
                                                   const uint8_t *av_restrict end);
 
+void ff_rtp_send_raw_rfc4175(AVFormatContext *ctx, const uint8_t *frame_buf, int frame_size);
+
 #endif /* AVFORMAT_RTPENC_H */

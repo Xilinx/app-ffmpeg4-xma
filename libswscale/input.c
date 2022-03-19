@@ -1179,6 +1179,7 @@ av_cold void ff_sws_init_input_funcs(SwsContext *c)
     case AV_PIX_FMT_YUV422P9LE:
     case AV_PIX_FMT_YUV444P9LE:
     case AV_PIX_FMT_YUV420P10LE:
+    case AV_PIX_FMT_XV15:
     case AV_PIX_FMT_YUV422P10LE:
     case AV_PIX_FMT_YUV440P10LE:
     case AV_PIX_FMT_YUV444P10LE:
@@ -1497,6 +1498,7 @@ av_cold void ff_sws_init_input_funcs(SwsContext *c)
     case AV_PIX_FMT_YUV422P9LE:
     case AV_PIX_FMT_YUV444P9LE:
     case AV_PIX_FMT_YUV420P10LE:
+    case AV_PIX_FMT_XV15:
     case AV_PIX_FMT_YUV422P10LE:
     case AV_PIX_FMT_YUV440P10LE:
     case AV_PIX_FMT_YUV444P10LE:

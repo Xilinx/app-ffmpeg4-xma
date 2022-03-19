@@ -357,6 +357,7 @@ struct AVFilterContext {
 
     struct AVFilterGraph *graph;    ///< filtergraph this filter belongs to
 
+
     /**
      * Type of multithreading being allowed/used. A combination of
      * AVFILTER_THREAD_* flags.
@@ -1170,6 +1171,32 @@ char *avfilter_graph_dump(AVFilterGraph *graph, const char *options);
  *          or AVERROR_EOF if all links returned AVERROR_EOF
  */
 int avfilter_graph_request_oldest(AVFilterGraph *graph);
+
+/**
+ * Flush XMA abrscaler filter.
+ *
+ * @param AVFilter link to pass on to filter frame to flush device buffers.
+ *
+ */
+#if CONFIG_LIBXMA2API
+void xma_abrscaler_filter_flush(AVFilterLink *link);
+
+/**
+ * Flush XMA multiscaler filter.
+ *
+ * @param AVFilter link to pass on to filter frame to flush device buffers.
+ *
+ */
+void xma_multiscaler_filter_flush(AVFilterLink *link);
+
+/**
+ * Flush xvbm_convert filter.
+ *
+ * @param AVFilter link to pass on to filter frame to flush device buffers.
+ *
+ */
+void xvbm_convert_filter_flush(AVFilterLink *link);
+#endif
 
 /**
  * @}

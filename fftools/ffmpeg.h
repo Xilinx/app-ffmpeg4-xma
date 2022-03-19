@@ -118,6 +118,9 @@ typedef struct OptionsContext {
     /* input options */
     int64_t input_ts_offset;
     int loop;
+#if CONFIG_LIBXMA2API
+    int xlnx_hwdev; //Xilinx hw device
+#endif
     int rate_emu;
     int accurate_seek;
     int thread_queue_size;

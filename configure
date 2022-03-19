@@ -315,6 +315,9 @@ External library support:
   --enable-opengl          enable OpenGL rendering [no]
   --enable-openssl         enable openssl, needed for https support
                            if gnutls, libtls or mbedtls is not used [no]
+  --enable-libxma2api      enable Xilinx Media Accelerator API
+  --enable-libxrm          enable Xilinx Resource Management API
+  --enable-libxvbm         enable Xilinx video buffer management API
   --enable-pocketsphinx    enable PocketSphinx, needed for asr filter [no]
   --disable-sndio          disable sndio support [autodetect]
   --disable-schannel       disable SChannel SSP, needed for TLS support on
@@ -1819,6 +1822,8 @@ EXTERNAL_LIBRARY_LIST="
     libvorbis
     libvpx
     libwebp
+    libxma2api
+    libxrm
     libxml2
     libzimg
     libzmq
@@ -1829,6 +1834,7 @@ EXTERNAL_LIBRARY_LIST="
     opengl
     pocketsphinx
     vapoursynth
+    libxvbm
 "
 
 HWACCEL_AUTODETECT_LIBRARY_LIST="
@@ -2910,6 +2916,13 @@ zlib_decoder_deps="zlib"
 zlib_encoder_deps="zlib"
 zmbv_decoder_deps="zlib"
 zmbv_encoder_deps="zlib"
+h264_vcu_mpsoc_decoder_deps="libxma2api xvbm libxrm"
+hevc_vcu_mpsoc_decoder_deps="libxma2api xvbm libxrm"
+split_deps="xvbm"
+multiscale_xma_deps="libxma2api xvbm libxrm"
+h264_vcu_mpsoc_encoder_deps="libxma2api xvbm libxrm"
+hevc_vcu_mpsoc_encoder_deps="libxma2api xvbm libxrm"
+xvbm_convert_deps="libxma2api xvbm"
 
 # hardware accelerators
 crystalhd_deps="libcrystalhd_libcrystalhd_if_h"
@@ -6478,6 +6491,10 @@ enabled libx264           && { check_pkg_config libx264 x264 "stdint.h x264.h" x
 enabled libx265           && require_pkg_config libx265 x265 x265.h x265_api_get &&
                              require_cpp_condition libx265 x265.h "X265_BUILD >= 70"
 enabled libxavs           && require libxavs "stdint.h xavs.h" xavs_encoder_encode "-lxavs $pthreads_extralibs $libm_extralibs"
+enabled libxma2api         && { require_pkg_config libxma2api libxma2api xma.h xma_initialize &&
+                                warn "XILINX: Adding libxma2api to ffmpeg"; }
+enabled libxrm            && require_pkg_config libxrm "libxrm >= 1.3.23" xrm.h xrmCreateContext
+enabled libxvbm           && require_pkg_config xvbm xvbm xvbm.h xvbm_buffer_refcnt_inc
 enabled libxavs2          && require_pkg_config libxavs2 "xavs2 >= 1.3.0" "stdint.h xavs2.h" xavs2_api_get
 enabled libxvid           && require libxvid xvid.h xvid_global -lxvidcore
 enabled libzimg           && require_pkg_config libzimg "zimg >= 2.7.0" zimg.h zimg_get_api_version

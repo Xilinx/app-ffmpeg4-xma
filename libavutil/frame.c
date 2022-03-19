@@ -26,6 +26,8 @@
 #include "mem.h"
 #include "samplefmt.h"
 #include "hwcontext.h"
+#include <xvbm.h>
+
 
 #if FF_API_FRAME_GET_SET
 MAKE_ACCESSORS(AVFrame, frame, int64_t, best_effort_timestamp)
@@ -45,6 +47,10 @@ MAKE_ACCESSORS(AVFrame, frame, enum AVColorRange, color_range)
     av_assert2(!(frame)->channel_layout || \
                (frame)->channels == \
                av_get_channel_layout_nb_channels((frame)->channel_layout))
+
+#if CONFIG_LIBXMA2API
+#define IS_VCU_FORMAT(x) ((x == XMA_VCU_NV12_FMT_TYPE) || (x == XMA_VCU_NV12_10LE32_FMT_TYPE))
+#endif
 
 #if FF_API_FRAME_QP
 struct qp_properties {
@@ -443,6 +449,10 @@ FF_ENABLE_DEPRECATION_WARNINGS
 int av_frame_ref(AVFrame *dst, const AVFrame *src)
 {
     int i, ret = 0;
+#if CONFIG_LIBXVBM
+    XmaFrame *xframe = NULL;
+    int num_planes;
+#endif
 
     av_assert1(dst->width == 0 && dst->height == 0);
     av_assert1(dst->channels == 0);
@@ -530,6 +540,20 @@ int av_frame_ref(AVFrame *dst, const AVFrame *src)
     memcpy(dst->data,     src->data,     sizeof(src->data));
     memcpy(dst->linesize, src->linesize, sizeof(src->linesize));
 
+#if CONFIG_LIBXVBM
+    if ((dst->format == AV_PIX_FMT_XVBM_8) || (dst->format == AV_PIX_FMT_XVBM_10)) {
+        if (dst->data[0]) {
+            xframe = (XmaFrame*)dst->data[0];
+            if (xframe) {
+                num_planes = (IS_VCU_FORMAT(xframe->frame_props.format)  ? 1 : xma_frame_planes_get(&xframe->frame_props));
+                for(int i=0; i<num_planes; i++) {
+                    xvbm_buffer_refcnt_inc(xframe->data[i].buffer);
+                }
+            }
+        }
+    }
+#endif
+
     return 0;
 
 fail:
@@ -553,11 +577,29 @@ AVFrame *av_frame_clone(const AVFrame *src)
 void av_frame_unref(AVFrame *frame)
 {
     int i;
+#if CONFIG_LIBXVBM
+    XmaFrame *xframe = NULL;
+    int num_planes;
+#endif
 
     if (!frame)
         return;
 
     wipe_side_data(frame);
+
+#if CONFIG_LIBXVBM
+    if ((frame->format == AV_PIX_FMT_XVBM_8) || (frame->format == AV_PIX_FMT_XVBM_10)) {
+        if (frame->data[0]) {
+            xframe = (XmaFrame*)frame->data[0];
+            if (xframe) {
+                num_planes = (IS_VCU_FORMAT(xframe->frame_props.format)  ? 1 : xma_frame_planes_get(&xframe->frame_props));
+                for(int i=0; i<num_planes; i++) {
+                    xvbm_buffer_pool_entry_free(xframe->data[i].buffer);
+                }
+            }
+        }
+    }
+#endif
 
     for (i = 0; i < FF_ARRAY_ELEMS(frame->buf); i++)
         av_buffer_unref(&frame->buf[i]);
@@ -855,6 +897,54 @@ const char *av_frame_side_data_name(enum AVFrameSideDataType type)
     }
     return NULL;
 }
+
+#if CONFIG_LIBXVBM
+int av_frame_clone_xma_frame (AVFrame *frame, XmaFrame *xframe)
+{
+    if ((frame->format != AV_PIX_FMT_XVBM_8) && (frame->format != AV_PIX_FMT_XVBM_10)) {
+        av_log(NULL, AV_LOG_ERROR, "unsupported pixel format : %s\n",av_get_pix_fmt_name (frame->format));
+        return AVERROR(EINVAL);
+    }
+
+    frame->data[0] = av_mallocz (sizeof (XmaFrame));
+    if (NULL == frame->data[0]) {
+        av_log(NULL, AV_LOG_ERROR, "failed to allocate memory\n");
+        return AVERROR(ENOMEM);
+    }
+
+    frame->buf[0] = av_buffer_create(frame->data[0], sizeof (XmaFrame), av_buffer_default_free, NULL, AV_BUFFER_FLAG_READONLY);
+    if (NULL == frame->data[0]) {
+        av_log(NULL, AV_LOG_ERROR, "failed to allocate memory\n");
+        av_free (frame->data[0]);
+        return AVERROR(ENOMEM);
+    }
+
+    memcpy (frame->data[0], xframe, sizeof (XmaFrame));
+
+    return 0;
+}
+
+XmaFrame *av_frame_get_xma_frame (AVFrame *frame)
+{
+    XmaFrame *xframe = NULL;
+
+    if ((frame->format != AV_PIX_FMT_XVBM_8) && (frame->format != AV_PIX_FMT_XVBM_10)) {
+        av_log(NULL, AV_LOG_ERROR, "unsupported pixel format : %s\n",av_get_pix_fmt_name (frame->format));
+        return NULL;
+    }
+
+    xframe = (XmaFrame *) calloc (sizeof (XmaFrame), 1);
+    if (NULL == xframe) {
+        av_log(NULL, AV_LOG_ERROR, "failed to allocate memory\n");
+        return NULL;
+    }
+
+    memcpy (xframe, frame->data[0], sizeof (XmaFrame));
+
+    return xframe;
+}
+#endif
+
 
 static int calc_cropping_offsets(size_t offsets[4], const AVFrame *frame,
                                  const AVPixFmtDescriptor *desc)
