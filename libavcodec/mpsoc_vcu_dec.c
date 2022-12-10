@@ -29,6 +29,8 @@
 #include "libavcodec/h264_parse.h"
 #include "libavcodec/hevc_parse.h"
 #include "libavcodec/hevcdec.h"
+#include "libavcodec/h264.h"
+#include "libavcodec/hevc.h"
 #include "libavcodec/mpsoc_vcu_hdr10.h"
 #include "avcodec.h"
 #include "internal.h"
@@ -52,6 +54,8 @@
  * at runtime, can grow but not indefinetely. */
 #define PKT_FIFO_SIZE  20
 #define PKT_FIFO_WATERMARK_SIZE 10
+#define DTS_FIFO_SIZE  32
+#define DTS_FIFO_INC_SIZE 16
 
 #define MAX_DEC_PARAMS 11
 #define XRM_PRECISION_1000000_BIT_MASK(load) ((load << 8))
@@ -77,11 +81,12 @@ typedef struct mpsoc_vcu_dec_ctx {
     uint32_t           entropy_buffers_count;
     uint32_t           latency_logging;
     uint32_t           splitbuff_mode;
-    int                first_idr_found;
+    uint32_t           idr_count;
     AVFifoBuffer      *pkt_fifo;
     int64_t            genpts;
     AVRational         pts_q;
     uint32_t           chroma_mode;
+    AVFifoBuffer      *dts_fifo;
 } mpsoc_vcu_dec_ctx;
 
 
@@ -136,7 +141,7 @@ static bool mpsoc_decode_is_h264_idr (AVPacket *pkt)
     unsigned char* end = pkt->data + pkt->size - 3;
     while (pt < end)
     {
-        if ((pt[0] == 0x00) && (pt[1] == 0x00) && (pt[2] == 0x01) && ((pt[3] & 0x1F) == 0x05))
+        if ((pt[0] == 0x00) && (pt[1] == 0x00) && (pt[2] == 0x01) && ((pt[3] & 0x1F) == H264_NAL_IDR_SLICE))
             return true;
         pt++;
     }
@@ -152,7 +157,7 @@ static bool mpsoc_decode_is_hevc_idr (AVPacket *pkt)
         if ((pt[0] == 0x00) && (pt[1] == 0x00) && (pt[2] == 0x01))
         {
             unsigned char naluType = (pt[3] & 0x7E) >> 1;
-            if (naluType == 19 || naluType == 20 || naluType == 21)
+            if (naluType == HEVC_NAL_IDR_W_RADL || naluType == HEVC_NAL_IDR_N_LP || naluType == HEVC_NAL_CRA_NUT)
                 return true;
         }
         pt++;
@@ -193,6 +198,14 @@ static av_cold int mpsoc_vcu_decode_close (AVCodecContext *avctx)
     if (xrmDestroyContext(ctx->xrm_ctx) != XRM_SUCCESS)
        av_log(avctx, AV_LOG_ERROR, "XRM : decoder destroy context failed\n");
 
+    if (ctx->dts_fifo) {
+        int64_t dts = AV_NOPTS_VALUE;
+        while (av_fifo_size(ctx->dts_fifo)) {
+            av_fifo_generic_read(ctx->dts_fifo, &dts, sizeof(dts), NULL);
+        }
+        av_fifo_free(ctx->dts_fifo);
+    }
+
     return 0;
 }
 
@@ -232,6 +245,7 @@ static int vcu_dec_get_out_buffer(struct AVCodecContext *s, AVFrame *frame, int 
     }
 
     ret = av_frame_clone_xma_frame (frame, &(ctx->xma_frame));
+    frame->pts = ctx->xma_frame.pts;
     if(ret != 0) {
         av_log(NULL, AV_LOG_ERROR, "Failed to clone XMAFrame into AVFrame \n");
 	return ret;
@@ -378,7 +392,7 @@ static int _xrm_dec_cuListAlloc(mpsoc_vcu_dec_ctx *ctx, int32_t dec_load, int32_
 
     if (ret != 0)
     {
-        av_log(NULL, AV_LOG_ERROR, "xrm_allocation: fail to allocate cu list from reserve id=%d or device=%d\n", xrm_reserve_id, deviceInfoDeviceIndex);
+        av_log(NULL, AV_LOG_ERROR, "xrm_allocation: fail to allocate cu list from reserve id=%d or device=%lu\n", xrm_reserve_id, deviceInfoDeviceIndex);
         return ret;
     }
     else
@@ -739,7 +753,10 @@ static av_cold int mpsoc_vcu_decode_init (AVCodecContext *avctx)
     ctx->dec_params[index].length = sizeof(ctx->codec_type);
     ctx->dec_params[index].value  = &(ctx->codec_type);
     index++;
-
+    
+    if(ctx->low_latency && avctx->has_b_frames > 0) {
+        return mpsoc_report_error(ctx, "Attempting to use decoder low latency, but input has B-Frames!", AVERROR(EINVAL));
+    }
     strcpy(ctx->dec_params_name[index], "low_latency");
     ctx->dec_params[index].name   = ctx->dec_params_name[index];
     ctx->dec_params[index].type   = XMA_UINT32;
@@ -846,8 +863,13 @@ static av_cold int mpsoc_vcu_decode_init (AVCodecContext *avctx)
     if (!ctx->pkt_fifo)
        return mpsoc_report_error(ctx, "packet fifo allocation failed", AVERROR(ENOMEM));
 
-    ctx->genpts = 0;
+    ctx->dts_fifo = av_fifo_alloc(DTS_FIFO_SIZE * sizeof(int64_t));
+    if(!ctx->dts_fifo)
+        return mpsoc_report_error(ctx, "DTS fifo allocation failed", AVERROR(ENOMEM));
+
+    ctx->genpts = -1;
     ctx->pts_q = av_make_q(0, 0);
+    ctx->idr_count = 0;
 
     switch (ctx->bitdepth) {
         case MPSOC_VCU_BITDEPTH_8BIT:  avctx->pix_fmt = AV_PIX_FMT_XVBM_8;  break;
@@ -862,14 +884,34 @@ static void set_pts(AVCodecContext *avctx, AVFrame *frame)
     AVRational fps;
     mpsoc_vcu_dec_ctx *ctx = avctx->priv_data;
 
-    fps.num = avctx->time_base.den;
-    fps.den = avctx->time_base.num * avctx->ticks_per_frame;
+    av_fifo_generic_read(ctx->dts_fifo, &frame->pkt_dts, sizeof(int64_t), NULL);
+    if (ctx->genpts != -1) {
+        fps.num = avctx->time_base.den;
+        fps.den = avctx->time_base.num * avctx->ticks_per_frame;
 
-    frame->pts = ctx->xma_frame.pts = ctx->genpts;
-    ctx->pts_q = av_div_q(av_inv_q(avctx->pkt_timebase), fps);
-    frame->pts = (int64_t)(frame->pts * av_q2d(ctx->pts_q));
+        frame->pts = ctx->xma_frame.pts = ctx->genpts;
+        ctx->pts_q = av_div_q(av_inv_q(avctx->pkt_timebase), fps);
+        frame->pts = (int64_t)(frame->pts * av_q2d(ctx->pts_q));
 
-    ctx->genpts++;
+        ctx->genpts++;
+    }
+}
+
+static uint8_t mpsoc_decode_hevc_unit_type (AVPacket* pkt)
+{
+    unsigned char* pt = pkt->data;
+    unsigned char* end = pkt->data + pkt->size - 3;
+    while (pt < end)
+    {
+        if ((pt[0] == 0x00) && (pt[1] == 0x00) && (pt[2] == 0x01))
+        {
+            unsigned char naluType = (pt[3] & 0x7E) >> 1;
+            if (naluType <= HEVC_NAL_RASL_R || (naluType >= HEVC_NAL_BLA_W_LP && naluType <= HEVC_NAL_CRA_NUT))
+                return naluType;
+        }
+        pt++;
+    }
+    return 255;
 }
 
 static int mpsoc_vcu_decode (AVCodecContext *avctx, void *data, int *got_frame, AVPacket *avpkt)
@@ -884,11 +926,25 @@ static int mpsoc_vcu_decode (AVCodecContext *avctx, void *data, int *got_frame, 
 
     int retries = 0;
     if (avpkt->data) {
-        if (ctx->first_idr_found == 0)
+        if ((avpkt->pts == AV_NOPTS_VALUE) && (ctx->genpts == -1)) {
+            ctx->genpts = 0;
+        }
+        if (av_fifo_space(ctx->dts_fifo) < sizeof(int64_t)) {
+            av_fifo_realloc2(ctx->dts_fifo, av_fifo_size(ctx->dts_fifo) + (sizeof(int64_t) * DTS_FIFO_INC_SIZE));
+        }
+        av_fifo_generic_write(ctx->dts_fifo, &avpkt->dts, sizeof(int64_t), NULL);
+        if ((avctx->codec_id == AV_CODEC_ID_H264) ? mpsoc_decode_is_h264_idr (avpkt) : mpsoc_decode_is_hevc_idr (avpkt))
+            ctx->idr_count++;
+        else if (ctx->idr_count == 0)
         {
-            if ((avctx->codec_id == AV_CODEC_ID_H264) ? mpsoc_decode_is_h264_idr (avpkt) : mpsoc_decode_is_hevc_idr (avpkt))
-                ctx->first_idr_found = 1;
-            else
+            *got_frame = 0;
+            return avpkt->size;
+        }
+
+        if (avctx->codec_id == AV_CODEC_ID_HEVC)
+        {
+            uint8_t nal_unit_type = mpsoc_decode_hevc_unit_type (avpkt);
+            if ((ctx->idr_count < 2) && ((nal_unit_type == HEVC_NAL_RASL_N) || (nal_unit_type == HEVC_NAL_RASL_R)))
             {
                 *got_frame = 0;
                 return avpkt->size;
@@ -963,7 +1019,6 @@ retry:
         data_used =  avpkt->size;
 
     } else { // EOF
-
         while(true) {
             if (av_fifo_size(ctx->pkt_fifo)) {
                 av_fifo_generic_peek(ctx->pkt_fifo, &buffer_pkt, sizeof(AVPacket*), NULL);
@@ -1051,6 +1106,7 @@ AVCodec ff_h264_vcu_mpsoc_decoder = {
                                                              AV_PIX_FMT_XVBM_10,
                                                              AV_PIX_FMT_NONE
                                                            },
+    .caps_internal       = FF_CODEC_CAP_SETS_PKT_DTS,
 };
 
 static const AVClass mpsoc_vcu_hevc_class = {
@@ -1077,4 +1133,5 @@ AVCodec ff_hevc_vcu_mpsoc_decoder = {
                                                              AV_PIX_FMT_XVBM_10,
                                                              AV_PIX_FMT_NONE
                                                            },
+    .caps_internal       = FF_CODEC_CAP_SETS_PKT_DTS,
 };

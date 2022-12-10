@@ -41,277 +41,11 @@
 #include <xma.h>
 #include <xrm.h>
 #include <pthread.h>
-#include "xlnx_lookahead.h"
+#include "mpsoc_vcu_enc.h"
 #include <xvbm.h>
 #include <dlfcn.h>
 #include "../xmaPropsTOjson.h"
 #include <errno.h>
-
-#define SCLEVEL1 2
-
-#define MAX_ENC_PARAMS      (6)
-/* MAX_EXTRADATA_SIZE should be consistent with AL_ENC_MAX_CONFIG_HEADER_SIZE on device */
-#define MAX_EXTRADATA_SIZE   (2 * 1024)
-#define MAX_ENC_WIDTH        3840
-#define MAX_ENC_HEIGHT       2160
-#define MAX_ENC_PIXELS       (MAX_ENC_WIDTH * MAX_ENC_HEIGHT)
-
-#define OFFSET(x) offsetof(mpsoc_vcu_enc_ctx, x)
-#define VE AV_OPT_FLAG_VIDEO_PARAM | AV_OPT_FLAG_ENCODING_PARAM
-
-#define VCU_STRIDE_ALIGN    32
-#define VCU_HEIGHT_ALIGN    32
-
-#define XRM_PRECISION_1000000_BIT_MASK(load) ((load << 8))
-
-#define DYN_PARAMS_LIB_NAME  "/opt/xilinx/xma_apps/libu30_enc_dyn_param.so"
-#define XLNX_ENC_INIT_DYN_PARAMS_OBJ  "xlnx_enc_init_dyn_params_obj"
-
-typedef void *DynparamsHandle;
-
-/* Functions pointers for loading functions from dynamic params library */
-typedef DynparamsHandle (*fp_xlnx_enc_get_dyn_params)(char*, uint32_t*);
-typedef uint32_t(*fp_xlnx_enc_get_dyn_param_frame_num) (DynparamsHandle, uint32_t);
-typedef uint32_t(*fp_xlnx_enc_get_runtime_b_frames) (DynparamsHandle, uint32_t);
-typedef void(*fp_xlnx_enc_reset_runtime_aq_params) (DynparamsHandle, uint32_t);
-typedef int32_t(*fp_xlnx_enc_add_dyn_params) (DynparamsHandle, XmaFrame*, uint32_t);
-typedef void (*fp_xlnx_enc_deinit_dyn_params) (DynparamsHandle dynamic_params_handle);
-
-typedef struct XlnxDynParamsObj
-{
-    fp_xlnx_enc_get_dyn_params            xlnx_enc_get_dyn_params;
-    fp_xlnx_enc_get_dyn_param_frame_num   xlnx_enc_get_dyn_param_frame_num;
-    fp_xlnx_enc_get_runtime_b_frames      xlnx_enc_get_runtime_b_frames;
-    fp_xlnx_enc_reset_runtime_aq_params   xlnx_enc_reset_runtime_aq_params;
-    fp_xlnx_enc_add_dyn_params            xlnx_enc_add_dyn_params;
-    fp_xlnx_enc_deinit_dyn_params         xlnx_enc_deinit_dyn_params;
-} XlnxDynParamsObj;
-
-typedef void(*InitDynParams) (XlnxDynParamsObj*);
-
-// Dynamic params structure
-typedef struct EncDynParams {
-    char dynamic_params_file[256];
-    bool dynamic_params_check;
-    DynparamsHandle dynamic_param_handle;
-    uint32_t dynamic_params_count;
-    uint32_t dynamic_params_index;
-    void* dyn_params_lib;
-    XlnxDynParamsObj dyn_params_obj;
-    InitDynParams xlnx_enc_init_dyn_params_obj;
-} EncDynParams;
-
-enum mpsoc_vcu_enc_supported_bitdepth {
-	MPSOC_VCU_BITDEPTH_8BIT = 8,
-	MPSOC_VCU_BITDEPTH_10BIT = 10,
-};
-
-typedef struct {
-    AVFrame *pic;
-    XmaFrame *xframe;
-} mpsoc_enc_req;
-
-typedef struct mpsoc_vcu_enc_ctx {
-    const AVClass     *class;
-    XmaEncoderSession *enc_session;
-    XmaParameter       enc_params[MAX_ENC_PARAMS];
-    xrmContext        *xrm_ctx;
-    xrmCuListResourceV2  encode_cu_list_res;
-    bool               encode_res_inuse;
-    int ideal_latency;
-    XmaFrame frame;
-    XmaDataBuffer xma_buffer;
-    bool sent_flush;
-    int  lxlnx_hwdev;
-    int bits_per_sample;
-    int control_rate;
-    int64_t max_bitrate;
-    int slice_qp;
-    int min_qp;
-    int max_qp;
-    int ip_delta;
-    int pb_delta;
-    double cpb_size;
-    double initial_delay;
-    int gop_mode;
-    int gdr_mode;
-    int b_frames;
-    int periodicity_idr;
-    int profile;
-    int level;
-    int tier;
-    int num_slices;
-    int qp_mode;
-    int filler_data;
-    int aspect_ratio;
-    int dependent_slice;
-    int slice_size;
-    int scaling_list;
-    int entropy_mode;
-    int loop_filter;
-    int constrained_intra_pred;
-    int prefetch_buffer;
-    int cores;
-    int latency_logging;
-    char enc_options[2048];
-    AVFifoBuffer *pts_queue;
-    int64_t pts_0;
-    int64_t pts_1;
-    int is_first_outframe;
-    int loop_filter_beta_offset;
-    int loop_filter_tc_offset;
-    int32_t out_packet_size;
-    uint32_t enc_frame_cnt;
-    //LA
-    xlnx_lookahead_t la;
-    int32_t lookahead_depth;
-    int32_t spatial_aq;
-    int32_t temporal_aq;
-    int32_t rate_control_mode;
-    int32_t spatial_aq_gain;
-    XmaFrame* la_in_frame;
-    //Expert options
-    char *expert_options;
-    int32_t tune_metrics;
-    int32_t lookahead_rc_off;
-    EncDynParams enc_dyn_params;
-} mpsoc_vcu_enc_ctx;
-
-int vcu_alloc_ff_packet(mpsoc_vcu_enc_ctx *ctx, AVPacket *pkt);
-
-static const AVOption h264Options[] = {
-    { "lxlnx_hwdev", "set local device ID for encoder if it needs to be different from global xlnx_hwdev", OFFSET(lxlnx_hwdev), AV_OPT_TYPE_INT, {.i64 = -1}, -1, INT_MAX, VE, "lxlnx_hwdev"},
-    { "control-rate", "Rate Control Mode", OFFSET(control_rate), AV_OPT_TYPE_INT, { .i64 = 1}, 0,  3, VE, "control-rate"},
-    { "max-bitrate", "Maximum Bit Rate", OFFSET(max_bitrate), AV_OPT_TYPE_INT64, { .i64 = 5000000}, 0,  35000000000, VE, "max-bitrate"},
-    { "slice-qp", "Slice QP", OFFSET(slice_qp), AV_OPT_TYPE_INT, { .i64 = -1}, -1,  51, VE, "slice-qp"},
-    { "min-qp", "Minimum QP value allowed for the rate control", OFFSET(min_qp), AV_OPT_TYPE_INT, { .i64 = 0}, 0, 51, VE, "min-qp"},
-    { "max-qp", "Maximum QP value allowed for the rate control", OFFSET(max_qp), AV_OPT_TYPE_INT, { .i64 = 51}, 0, 51, VE, "max-qp"},
-    { "bf", "Number of B-frames", OFFSET(b_frames), AV_OPT_TYPE_INT, { .i64 = 2}, 0, 4294967295, VE, "b-frames"},
-    { "periodicity-idr", "IDR Picture Frequency", OFFSET(periodicity_idr), AV_OPT_TYPE_INT, { .i64 = -1}, -1, 4294967295, VE, "periodicity-idr"},
-    { "profile", "Set the encoding profile", OFFSET(profile), AV_OPT_TYPE_INT, { .i64 = FF_PROFILE_H264_HIGH }, FF_PROFILE_H264_BASELINE, FF_PROFILE_H264_HIGH_10_INTRA, VE, "profile" },
-    { "level", "Set the encoding level restriction", OFFSET(level), AV_OPT_TYPE_INT, { .i64 = 10 }, 10, 52, VE, "level" },
-    { "slices", "Number of Slices", OFFSET(num_slices), AV_OPT_TYPE_INT, { .i64 = 1}, 1, 68, VE, "slices"},
-    { "qp-mode", "QP Control Mode", OFFSET(qp_mode), AV_OPT_TYPE_INT, { .i64 = 1}, 0, 2, VE, "qp-mode"},
-    { "aspect-ratio", "Aspect-Ratio", OFFSET(aspect_ratio), AV_OPT_TYPE_INT, { .i64 = 0}, 0, 3, VE, "aspect-ratio"},
-    { "scaling-list", "Scaling List Mode", OFFSET(scaling_list), AV_OPT_TYPE_INT, { .i64 = 1}, 0, 1, VE, "scaling-list"},
-    { "cores", "Number of cores to use", OFFSET(cores), AV_OPT_TYPE_INT, { .i64 = 0}, 0, 4, VE, "cores"},
-    { "lookahead_depth", "Number of frames to lookahead for qp maps generation or custom rate control. Up to 20", OFFSET(lookahead_depth), AV_OPT_TYPE_INT, {.i64 = 0}, 0, 20, VE, "lookahead_depth"},
-    { "temporal-aq", "Enable Temporal AQ.", OFFSET(temporal_aq), AV_OPT_TYPE_INT, {.i64 = 1}, 0, 1, VE, "temporal-aq-mode"},
-    { "spatial-aq", "Enable Spatial AQ.", OFFSET(spatial_aq), AV_OPT_TYPE_INT, {.i64 = 1}, 0, 1, VE, "spatial-aq-mode"},
-    { "spatial-aq-gain", "Percentage of spatial AQ gain", OFFSET(spatial_aq_gain), AV_OPT_TYPE_INT, {.i64 = 50}, 0, 100, VE, "spatial-aq-gain"},
-	{ "latency_logging", "Log latency information to syslog", OFFSET(latency_logging), AV_OPT_TYPE_INT, { .i64 = 0 }, 0, 1, VE, "latency_logging" },
-	{ "expert-options", "Expert options for MPSoC H.264 Encoder", OFFSET(expert_options), AV_OPT_TYPE_STRING, {.str = NULL}, 0, 1024, VE, "expert_options"},
-	{ "tune-metrics", "Tunes MPSoC H.264 Encoder's video quality for objective metrics", OFFSET(tune_metrics), AV_OPT_TYPE_INT, {.i64 = 0}, 0, 1, VE, "tune-metrics"},
-
-    { "const-qp", "Constant QP (0)", 0, AV_OPT_TYPE_CONST, { .i64 = 0}, 0, 0, VE, "control-rate"},
-    { "cbr", "Constant Bitrate (1)", 0, AV_OPT_TYPE_CONST, { .i64 = 1}, 0, 0, VE, "control-rate"},
-    { "vbr", "Variable Bitrate (2)", 0, AV_OPT_TYPE_CONST, { .i64 = 2}, 0, 0, VE, "control-rate"},
-    { "low-latency", "Low Latency (3)", 0, AV_OPT_TYPE_CONST, { .i64 = 3}, 0, 0, VE, "control-rate"},
-    { "auto", "Auto (-1)", 0, AV_OPT_TYPE_CONST, { .i64 = -1}, 0, 0, VE, "slice-qp"},
-    { "baseline", "Baseline profile (66)", 0, AV_OPT_TYPE_CONST, { .i64 = FF_PROFILE_H264_BASELINE}, 0, 0, VE, "profile"},
-    { "main", "Main profile (77)", 0, AV_OPT_TYPE_CONST, { .i64 = FF_PROFILE_H264_MAIN}, 0, 0, VE, "profile"},
-    { "high", "High profile (100)", 0, AV_OPT_TYPE_CONST, { .i64 = FF_PROFILE_H264_HIGH}, 0, 0, VE, "profile"},
-    { "high-10", "High 10 profile (110)", 0, AV_OPT_TYPE_CONST, {.i64 = FF_PROFILE_H264_HIGH_10}, 0, 0, VE, "profile"},
-    { "high-10-intra", "High 10 Intra profile (110 with constraint set 3, 2158)", 0, AV_OPT_TYPE_CONST, { .i64 = FF_PROFILE_H264_HIGH_10_INTRA}, 0, 0, VE, "profile"},
-    { "1", "1 level (10)", 0, AV_OPT_TYPE_CONST, { .i64 = 10}, 0, 0, VE, "level"},
-    { "1.1", "1.1 level (11)", 0, AV_OPT_TYPE_CONST, { .i64 = 11}, 0, 0, VE, "level"},
-    { "1.2", "1.2 level (12)", 0, AV_OPT_TYPE_CONST, { .i64 = 12}, 0, 0, VE, "level"},
-    { "1.3", "1.3 level (13)", 0, AV_OPT_TYPE_CONST, { .i64 = 13}, 0, 0, VE, "level"},
-    { "2", "2 level (20)", 0, AV_OPT_TYPE_CONST, { .i64 = 20}, 0, 0, VE, "level"},
-    { "2.1", "2.1 level (21)", 0, AV_OPT_TYPE_CONST, { .i64 = 21}, 0, 0, VE, "level"},
-    { "2.2", "2.2 level (22)", 0, AV_OPT_TYPE_CONST, { .i64 = 22}, 0, 0, VE, "level"},
-    { "3", "3 level (30)", 0, AV_OPT_TYPE_CONST, { .i64 = 30}, 0, 0, VE, "level"},
-    { "3.1", "3.1 level (31)", 0, AV_OPT_TYPE_CONST, { .i64 = 31}, 0, 0, VE, "level"},
-    { "3.2", "3.2 level (32)", 0, AV_OPT_TYPE_CONST, { .i64 = 32}, 0, 0, VE, "level"},
-    { "4", "4 level (40)", 0, AV_OPT_TYPE_CONST, { .i64 = 40}, 0, 0, VE, "level"},
-    { "4.1", "4.1 level (41)", 0, AV_OPT_TYPE_CONST, { .i64 = 41}, 0, 0, VE, "level"},
-    { "4.2", "4.2 level (42)", 0, AV_OPT_TYPE_CONST, { .i64 = 42}, 0, 0, VE, "level"},
-    { "5", "5 level (50)", 0, AV_OPT_TYPE_CONST, { .i64 = 50}, 0, 0, VE, "level"},
-    { "5.1", "5.1 level (51)", 0, AV_OPT_TYPE_CONST, { .i64 = 51}, 0, 0, VE, "level"},
-    { "5.2", "5.2 level (52)", 0, AV_OPT_TYPE_CONST, { .i64 = 52}, 0, 0, VE, "level"},
-    { "uniform", "Use the same QP for all coding units of the frame (0)", 0, AV_OPT_TYPE_CONST, { .i64 = 0}, 0, 0, VE, "qp-mode"},
-    { "auto", "Let the VCU encoder change the QP for each coding unit according to its content (1)", 0, AV_OPT_TYPE_CONST, { .i64 = 1}, 0, 0, VE, "qp-mode"},
-    { "relative-load", "Use the information gathered in the lookahead to calculate the best QP (2)", 0, AV_OPT_TYPE_CONST, { .i64 = 2}, 0, 0, VE, "qp-mode"},
-    { "auto", "4:3 for SD video, 16:9 for HD video, unspecified for unknown format (0)", 0, AV_OPT_TYPE_CONST, { .i64 = 0}, 0, 0, VE, "aspect-ratio"},
-    { "4:3", "4:3 aspect ratio (1)", 0, AV_OPT_TYPE_CONST, { .i64 = 1}, 0, 0, VE, "aspect-ratio"},
-    { "16:9", "16:9 aspect ratio (2)", 0, AV_OPT_TYPE_CONST, { .i64 = 2}, 0, 0, VE, "aspect-ratio"},
-    { "none", "Aspect ratio information is not present in the stream (3)", 0, AV_OPT_TYPE_CONST, { .i64 = 3}, 0, 0, VE, "aspect-ratio"},
-    { "flat", "Flat scaling list mode (0)", 0, AV_OPT_TYPE_CONST, { .i64 = 0}, 0, 0, VE, "scaling-list"},
-    { "default", "Default scaling list mode (1)", 0, AV_OPT_TYPE_CONST, { .i64 = 1}, 0, 0, VE, "scaling-list"},
-    { "auto", "Automatic (0)", 0, AV_OPT_TYPE_CONST, { .i64 = 0}, 0, 0, VE, "cores"},
-    { "disable", "Disable Temporal AQ (0)", 0, AV_OPT_TYPE_CONST, { .i64 = 0}, 0, 0, VE, "temporal-aq-mode"},
-    { "enable", "Enable Temporal AQ (1)", 0, AV_OPT_TYPE_CONST, { .i64 = 1}, 0, 0, VE, "temporal-aq-mode"},
-    { "disable", "Disable Spatial AQ (0)", 0, AV_OPT_TYPE_CONST, { .i64 = 0}, 0, 0, VE, "spatial-aq-mode"},
-    { "enable", "Enable Spatial AQ (1)", 0, AV_OPT_TYPE_CONST, { .i64 = 1}, 0, 0, VE, "spatial-aq-mode"},
-	{ "disable", "Disable tune metrics (0)", 0, AV_OPT_TYPE_CONST, { .i64 = 0}, 0, 0, VE, "tune-metrics"},
-    { "enable", "Enable tune metrics (1)", 0, AV_OPT_TYPE_CONST, { .i64 = 1}, 0, 0, VE, "tune-metrics"},
-    {NULL},
-};
-
-static const AVOption hevcOptions[] = {
-    { "lxlnx_hwdev", "set local device ID for encoder if it needs to be different from global xlnx_hwdev", OFFSET(lxlnx_hwdev), AV_OPT_TYPE_INT, {.i64 = -1}, -1, INT_MAX, VE, "lxlnx_hwdev"},
-    { "control-rate", "Rate Control Mode", OFFSET(control_rate), AV_OPT_TYPE_INT, { .i64 = 1}, 0,  3, VE, "control-rate"},
-    { "max-bitrate", "Maximum Bit Rate", OFFSET(max_bitrate), AV_OPT_TYPE_INT64, { .i64 = 5000000}, 0,  35000000000, VE, "max-bitrate"},
-    { "slice-qp", "Slice QP", OFFSET(slice_qp), AV_OPT_TYPE_INT, { .i64 = -1}, -1,  51, VE, "slice-qp"},
-    { "min-qp", "Minimum QP value allowed for the rate control", OFFSET(min_qp), AV_OPT_TYPE_INT, { .i64 = 0}, 0, 51, VE, "min-qp"},
-    { "max-qp", "Maximum QP value allowed for the rate control", OFFSET(max_qp), AV_OPT_TYPE_INT, { .i64 = 51}, 0, 51, VE, "max-qp"},
-    { "bf", "Number of B-frames", OFFSET(b_frames), AV_OPT_TYPE_INT, { .i64 = 2}, 0, 4294967295, VE, "b-frames"},
-    { "periodicity-idr", "IDR Picture Frequency", OFFSET(periodicity_idr), AV_OPT_TYPE_INT, { .i64 = -1}, -1, 4294967295, VE, "periodicity-idr"},
-    { "profile", "Set the encoding profile", OFFSET(profile), AV_OPT_TYPE_INT, { .i64 = 0 }, 0, 3, VE, "profile" },
-    { "level", "Set the encoding level restriction", OFFSET(level), AV_OPT_TYPE_INT, { .i64 = 10 }, 10, 52, VE, "level" },
-    { "tier", "Set the encoding tier", OFFSET(tier), AV_OPT_TYPE_INT, { .i64 = 0}, 0, 1, VE, "tier" },
-    { "slices", "Number of Slices", OFFSET(num_slices), AV_OPT_TYPE_INT, { .i64 = 1}, 1, 68, VE, "slices"},
-    { "qp-mode", "QP Control Mode", OFFSET(qp_mode), AV_OPT_TYPE_INT, { .i64 = 1}, 0, 2, VE, "qp-mode"},
-    { "aspect-ratio", "Aspect-Ratio", OFFSET(aspect_ratio), AV_OPT_TYPE_INT, { .i64 = 0}, 0, 3, VE, "aspect-ratio"},
-    { "scaling-list", "Scaling List Mode", OFFSET(scaling_list), AV_OPT_TYPE_INT, { .i64 = 1}, 0, 1, VE, "scaling-list"},
-    { "cores", "Number of cores to use", OFFSET(cores), AV_OPT_TYPE_INT, { .i64 = 0}, 0, 4, VE, "cores"},
-    { "lookahead_depth", "Number of frames to lookahead for qp maps generation or custom rate control. Up to 20", OFFSET(lookahead_depth), AV_OPT_TYPE_INT, {.i64 = 0}, 0, 20, VE, "lookahead_depth"},
-    { "temporal-aq", "Enable Temporal AQ.", OFFSET(temporal_aq), AV_OPT_TYPE_INT, {.i64 = 1}, 0, 1, VE, "temporal-aq-mode"},
-    { "spatial-aq", "Enable Spatial AQ.", OFFSET(spatial_aq), AV_OPT_TYPE_INT, {.i64 = 1}, 0, 1, VE, "spatial-aq-mode"},
-    { "spatial-aq-gain", "Percentage of spatial AQ gain", OFFSET(spatial_aq_gain), AV_OPT_TYPE_INT, {.i64 = 50}, 0, 100, VE, "spatial-aq-gain"},
-	{ "latency_logging", "Log latency information to syslog", OFFSET(latency_logging), AV_OPT_TYPE_INT, { .i64 = 0 }, 0, 1, VE, "latency_logging" },
-	{ "expert-options", "Expert options for MPSoC HEVC Encoder", OFFSET(expert_options), AV_OPT_TYPE_STRING, {.str = NULL}, 0, 1024, VE, "expert_options"},
-	{ "tune-metrics", "Tunes MPSoC HEVC Encoder's video quality for objective metrics", OFFSET(tune_metrics), AV_OPT_TYPE_INT, {.i64 = 0}, 0, 1, VE, "tune-metrics"},
-
-    { "const-qp", "Constant QP (0)", 0, AV_OPT_TYPE_CONST, { .i64 = 0}, 0, 0, VE, "control-rate"},
-    { "cbr", "Constant Bitrate (1)", 0, AV_OPT_TYPE_CONST, { .i64 = 1}, 0, 0, VE, "control-rate"},
-    { "vbr", "Variable Bitrate (2)", 0, AV_OPT_TYPE_CONST, { .i64 = 2}, 0, 0, VE, "control-rate"},
-    { "low-latency", "Low Latency (3)", 0, AV_OPT_TYPE_CONST, { .i64 = 3}, 0, 0, VE, "control-rate"},
-    { "auto", "Auto (-1)", 0, AV_OPT_TYPE_CONST, { .i64 = -1}, 0, 0, VE, "slice-qp"},
-    { "main", "Main profile (0)", 0, AV_OPT_TYPE_CONST, { .i64 = 0}, 0, 0, VE, "profile"},
-    { "main-intra", "Main Intra profile (1)", 0, AV_OPT_TYPE_CONST, { .i64 = 1}, 0, 0, VE, "profile"},
-    { "main-10", "Main 10 profile (2)", 0, AV_OPT_TYPE_CONST, { .i64 = 2}, 0, 0, VE, "profile"},
-    { "main-10-intra", "Main 10 Intra profile (3)", 0, AV_OPT_TYPE_CONST, { .i64 = 3}, 0, 0, VE, "profile"},
-    { "1", "1 level (10)", 0, AV_OPT_TYPE_CONST, { .i64 = 10}, 0, 0, VE, "level"},
-    { "2", "2 level (20)", 0, AV_OPT_TYPE_CONST, { .i64 = 20}, 0, 0, VE, "level"},
-    { "2.1", "2.1 level (21)", 0, AV_OPT_TYPE_CONST, { .i64 = 21}, 0, 0, VE, "level"},
-    { "3", "3 level (30)", 0, AV_OPT_TYPE_CONST, { .i64 = 30}, 0, 0, VE, "level"},
-    { "3.1", "3.1 level (31)", 0, AV_OPT_TYPE_CONST, { .i64 = 31}, 0, 0, VE, "level"},
-    { "4", "4 level (40)", 0, AV_OPT_TYPE_CONST, { .i64 = 40}, 0, 0, VE, "level"},
-    { "4.1", "4.1 level (41)", 0, AV_OPT_TYPE_CONST, { .i64 = 41}, 0, 0, VE, "level"},
-    { "5", "5 level (50)", 0, AV_OPT_TYPE_CONST, { .i64 = 50}, 0, 0, VE, "level"},
-    { "5.1", "5.1 level (51)", 0, AV_OPT_TYPE_CONST, { .i64 = 51}, 0, 0, VE, "level"},
-    { "5.2", "5.2 level (52)", 0, AV_OPT_TYPE_CONST, { .i64 = 52}, 0, 0, VE, "level"},
-    { "main", "Main tier (0)", 0, AV_OPT_TYPE_CONST, { .i64 = 0}, 0, 0, VE, "tier"},
-    { "high", "High tier (1)", 0, AV_OPT_TYPE_CONST, { .i64 = 1}, 0, 0, VE, "tier"},
-    { "uniform", "Use the same QP for all coding units of the frame (0)", 0, AV_OPT_TYPE_CONST, { .i64 = 0}, 0, 0, VE, "qp-mode"},
-    { "auto", "Let the VCU encoder change the QP for each coding unit according to its content (1)", 0, AV_OPT_TYPE_CONST, { .i64 = 1}, 0, 0, VE, "qp-mode"},
-    { "relative-load", "Use the information gathered in the lookahead to calculate the best QP (2)", 0, AV_OPT_TYPE_CONST, { .i64 = 2}, 0, 0, VE, "qp-mode"},
-    { "auto", "4:3 for SD video, 16:9 for HD video, unspecified for unknown format (0)", 0, AV_OPT_TYPE_CONST, { .i64 = 0}, 0, 0, VE, "aspect-ratio"},
-    { "4:3", "4:3 aspect ratio (1)", 0, AV_OPT_TYPE_CONST, { .i64 = 1}, 0, 0, VE, "aspect-ratio"},
-    { "16:9", "16:9 aspect ratio (2)", 0, AV_OPT_TYPE_CONST, { .i64 = 2}, 0, 0, VE, "aspect-ratio"},
-    { "none", "Aspect ratio information is not present in the stream (3)", 0, AV_OPT_TYPE_CONST, { .i64 = 3}, 0, 0, VE, "aspect-ratio"},
-    { "flat", "Flat scaling list mode (0)", 0, AV_OPT_TYPE_CONST, { .i64 = 0}, 0, 0, VE, "scaling-list"},
-    { "default", "Default scaling list mode (1)", 0, AV_OPT_TYPE_CONST, { .i64 = 1}, 0, 0, VE, "scaling-list"},
-    { "auto", "Automatic (0)", 0, AV_OPT_TYPE_CONST, { .i64 = 0}, 0, 0, VE, "cores"},
-    { "disable", "Disable Temporal AQ (0)", 0, AV_OPT_TYPE_CONST, { .i64 = 0}, 0, 0, VE, "temporal-aq-mode"},
-    { "enable", "Enable Temporal AQ (1)", 0, AV_OPT_TYPE_CONST, { .i64 = 1}, 0, 0, VE, "temporal-aq-mode"},
-    { "disable", "Disable Spatial AQ (0)", 0, AV_OPT_TYPE_CONST, { .i64 = 0}, 0, 0, VE, "spatial-aq-mode"},
-    { "enable", "Enable Spatial AQ (1)", 0, AV_OPT_TYPE_CONST, { .i64 = 1}, 0, 0, VE, "spatial-aq-mode"},
-	{ "disable", "Disable tune metrics (0)", 0, AV_OPT_TYPE_CONST, { .i64 = 0}, 0, 0, VE, "tune-metrics"},
-    { "enable", "Enable tune metrics (1)", 0, AV_OPT_TYPE_CONST, { .i64 = 1}, 0, 0, VE, "tune-metrics"},
-    {NULL},
-};
 
 static int mpsoc_report_error(mpsoc_vcu_enc_ctx *ctx, const char *err_str, int32_t err_type)
 {
@@ -432,6 +166,7 @@ static int32_t init_la(AVCodecContext *avctx)
     la_cfg.temporal_aq_mode = ctx->temporal_aq;
     la_cfg.rate_control_mode = ctx->rate_control_mode;
     la_cfg.b_frames = ctx->b_frames;
+    la_cfg.dynamic_gop = ctx->dynamic_gop;
     la_cfg.framerate.numerator   = avctx->framerate.num;
     la_cfg.framerate.denominator = avctx->framerate.den;
     la_cfg.latency_logging = ctx->latency_logging;
@@ -557,17 +292,19 @@ static int32_t xlnx_enc_dyn_params_update(mpsoc_vcu_enc_ctx *ctx, XmaFrame *in_f
                                 enc_dyn_params->dynamic_params_index);
 
     if (dyn_frame_num == (ctx->enc_frame_cnt)) {
-        uint32_t num_b_frames = (*(enc_dyn_params->dyn_params_obj.xlnx_enc_get_runtime_b_frames))
+        if(!ctx->dynamic_gop) {
+            uint32_t num_b_frames = (*(enc_dyn_params->dyn_params_obj.xlnx_enc_get_runtime_b_frames))
                                     (enc_dyn_params->dynamic_param_handle,
                                     enc_dyn_params->dynamic_params_index);
-        /* Dynamic b-frames have to be less than or equal to number of B-frames
-        specified on the command line or default value, whichever is set at the
-        beginning of encoding*/
-        if (num_b_frames > ctx->b_frames) {
-            av_log(NULL, AV_LOG_ERROR,
-            "Dynamic B-frames %d at frame num %d cannot be greater than initial number of b-frames (%d)\n",
-            num_b_frames, dyn_frame_num, ctx->b_frames);
-            return -1;
+            /* Dynamic b-frames have to be less than or equal to number of B-frames
+            specified on the command line or default value, whichever is set at the
+            beginning of encoding*/
+            if (num_b_frames > ctx->b_frames) {
+                av_log(NULL, AV_LOG_ERROR,
+                "Dynamic B-frames %d at frame num %d cannot be greater than initial number of b-frames (%d)\n",
+                num_b_frames, dyn_frame_num, ctx->b_frames);
+                return -1;
+            }
         }
 
         /* If tune-metrics is enabled, then reset all the AQ parameters */
@@ -761,6 +498,21 @@ static int fill_options_file_h264 (AVCodecContext *avctx)
 		ctx->qp_mode = 0;
 	}
 
+    if(!ctx->disable_pipeline && ctx->avc_lowlat) {
+        av_log(avctx, AV_LOG_ERROR, "AVC low latency flag is not needed when pipeline is enabled \n");
+        return AVERROR(EINVAL);
+    } else if(ctx->disable_pipeline && !ctx->avc_lowlat) {
+        if(ctx->cores > 1) {
+            av_log(avctx, AV_LOG_ERROR, "More than one core given for with pipeline disabled! Set AVC low latency to allow for multiple cores with pipeline disabled! \n");
+            return AVERROR(EINVAL);
+        }
+        if ((avctx->width > 1920) || (avctx->height > 1920)) {
+            av_log(avctx, AV_LOG_ERROR, "Input is %d x %d, but H264 pipeline is disabled. Set AVC low latency to disable pipelining for higher resolutions \n",
+                   avctx->width, avctx->height);
+            return AVERROR(EINVAL);
+        }
+    }
+
     const char* RateCtrlMode = "CONST_QP";
     switch (ctx->control_rate) {
         case 0: RateCtrlMode = "CONST_QP"; break;
@@ -770,7 +522,7 @@ static int fill_options_file_h264 (AVCodecContext *avctx)
     }
 
     char FrameRate[16];
-    sprintf(FrameRate, "%llu/%llu", avctx->framerate.num, avctx->framerate.den);
+    sprintf(FrameRate, "%u/%u", avctx->framerate.num, avctx->framerate.den);
 
     char SliceQP[8];
     if (ctx->slice_qp == -1)
@@ -917,6 +669,13 @@ static int fill_options_file_h264 (AVCodecContext *avctx)
     else
         return AVERROR(EINVAL);
 
+    /* For H.264 encoder multi-core with disable pipeline, we need to enable low
+       latency flag in soft kernel */
+    const char* AvcLowLat = "DISABLE";
+    if(ctx->avc_lowlat) {
+        AvcLowLat = "ENABLE";
+    }
+
     init_hdr10_vui_params();
     HDR10_VUI_Params* pHDRVUI = get_hdr10_vui_params();
     sprintf (ctx->enc_options, "[INPUT]\n"
@@ -962,14 +721,15 @@ static int fill_options_file_h264 (AVCodecContext *avctx)
             "ConstrainedIntraPred = %s\n"
             "LambdaCtrlMode = %s\n"
             "CacheLevel2 = %s\n"
-            "NumCore = %d\n",
+            "NumCore = %d\n"
+            "AvcLowLat = %s\n",
             avctx->width, avctx->height, Format, RateCtrlMode, FrameRate, avctx->bit_rate / 1000,
             ctx->max_bitrate / 1000, SliceQP, ctx->max_qp, ctx->min_qp, ctx->ip_delta, ctx->pb_delta,
             ctx->cpb_size, ctx->initial_delay, GopCtrlMode, GDRMode, avctx->gop_size, ctx->b_frames,
             ctx->periodicity_idr, Profile, Level, ctx->bits_per_sample, ctx->num_slices, QPCtrlMode, ctx->slice_size,
             FillerData, AspectRatio, pHDRVUI->ColorDesc, pHDRVUI->TxChar, pHDRVUI->ColorMatrix,
             ScalingList, EntropyMode, LoopFilter, ctx->loop_filter_beta_offset, ctx->loop_filter_tc_offset,
-            ConstIntraPred, LambdaCtrlMode, PrefetchBuffer, ctx->cores);
+            ConstIntraPred, LambdaCtrlMode, PrefetchBuffer, ctx->cores, AvcLowLat);
 
     return 0;
 }
@@ -1157,7 +917,7 @@ static int fill_options_file_hevc (AVCodecContext *avctx)
     }
 
     char FrameRate[16];
-    sprintf(FrameRate, "%llu/%llu", avctx->framerate.num, avctx->framerate.den);
+    sprintf(FrameRate, "%u/%u", avctx->framerate.num, avctx->framerate.den);
 
     char SliceQP[8];
     if (ctx->slice_qp == -1)
@@ -1357,10 +1117,6 @@ static int fill_options_file_hevc (AVCodecContext *avctx)
 
     return 0;
 }
-
-#define MIN_LOOKAHEAD_DEPTH	(1)
-#define MAX_LOOKAHEAD_DEPTH	(30)
-
 
 static int _calc_enc_load(xrmContext *xrm_ctx, XmaEncoderProperties *enc_props, int32_t func_id, int32_t *enc_load)
 {
@@ -1565,11 +1321,53 @@ static av_cold int mpsoc_vcu_encode_init(AVCodecContext *avctx)
         return AVERROR(EINVAL);
     }
 
+    if (ctx->dynamic_gop) {
+        if (ctx->b_frames != UNSET_NUM_B_FRAMES) {
+            av_log(avctx, AV_LOG_ERROR, "B-Frames set as %d, but dynamic GOP is enabled! Dynamic GOP cannot be enabled "
+                   "with a set number of B-Frames!\n", ctx->b_frames);
+            return AVERROR(EINVAL);
+        }
+        if (ctx->lookahead_depth == 0) {
+            av_log(avctx, AV_LOG_WARNING, "Dynamic gop enabled, setting lookahead depth to %d\n", DYNAMIC_GOP_MIN_LOOKAHEAD_DEPTH);
+            ctx->lookahead_depth = DYNAMIC_GOP_MIN_LOOKAHEAD_DEPTH;
+        } else if (ctx->lookahead_depth < DYNAMIC_GOP_MIN_LOOKAHEAD_DEPTH) {
+            av_log(avctx, AV_LOG_ERROR, "Dynamic GOP enabled, but lookahead depth is %d! Lookahead depth must be at least %d "
+                   "to run dynamic GOP!\n", ctx->lookahead_depth, DYNAMIC_GOP_MIN_LOOKAHEAD_DEPTH);
+            return AVERROR(EINVAL);
+        }
+        if (ctx->disable_pipeline) {
+            av_log(avctx, AV_LOG_ERROR, "Encoder pipeline is disabled, but dynamic GOP is enabled! Encoder pipelining "
+                   "cannot be disabled with dynamic GOP!\n");
+            return AVERROR(EINVAL);
+        }
+        if ((ctx->profile == FF_PROFILE_H264_BASELINE) || (ctx->profile == FF_PROFILE_H264_HIGH_10_INTRA) ||
+           (ctx->profile == 1) || (ctx->profile == 3)) { // 1 - HEVC_MAIN_INTRA, 3 - HEVC_MAIN10_INTRA
+            av_log(avctx, AV_LOG_ERROR, "Encoder profile is I and/or P only, enabling dynamic GOP results in incorrect "
+                   "delta QPs \n");
+            return AVERROR(EINVAL);
+        }
+    }
+    if(ctx->disable_pipeline) {
+        if(ctx->b_frames == UNSET_NUM_B_FRAMES) {
+            av_log(avctx, AV_LOG_WARNING, "Pipeline disabled, setting B-Frames to 0\n");
+            ctx->b_frames = 0;
+        } else if(ctx->b_frames != 0) {
+            av_log(avctx, AV_LOG_ERROR, "Pipeline cannot be disabled when encoding b-frames! "
+                   "Change encoder parameters to encode only I and P frames. Ie -bf 0\n");
+            return AVERROR(EINVAL);
+        }
+        float fps = (avctx->framerate.num + 0.0) / avctx->framerate.den;
+        if(avctx->width * avctx->height == MAX_ENC_PIXELS && fps > 30.0) {
+            av_log(avctx, AV_LOG_WARNING, "Performance may not run at realtime past 4k 30 fps with encoder pipeline disabled!\n");
+        }
+    }
+    /* For dynamic gop, we let b-frames to use default b-frames. This caps the number of
+    b-frames dynamic gop can choose. */
+    ctx->b_frames = ctx->b_frames == UNSET_NUM_B_FRAMES ? DEFAULT_NUM_B_FRAMES : ctx->b_frames;
     if (avctx->gop_size < 0) {
       av_log(avctx, AV_LOG_ERROR, "The group of picture (GOP) size should be greater than or equal to 0 \n");
       return AVERROR(ENOTSUP);
     }
-
     if ((ctx->lookahead_depth > avctx->gop_size) || ((ctx->periodicity_idr >= 0) && (ctx->lookahead_depth > ctx->periodicity_idr))) {
         av_log(avctx, AV_LOG_ERROR,
 	"Error : mpsoc_vcu_encode_frame : Invalid arguments. gop size(%d)/IDR period(%d) must be greater than lookahead_depth(%d)\n",
@@ -1643,6 +1441,13 @@ static av_cold int mpsoc_vcu_encode_init(AVCodecContext *avctx)
 		ctx->rate_control_mode = 0;
 	}
 
+    if (ctx->rate_control_mode && ctx->filler_data) {
+        av_log (ctx, AV_LOG_ERROR, "Encoder does not support filler-data, when Lookahead rate control is enabled.\n"
+                "Please check options : lookahead_depth=%d, lookahead-rc-off=%d, filler-data=%d\n",
+                ctx->lookahead_depth, ctx->lookahead_rc_off, ctx->filler_data);
+        return XMA_ERROR;
+    }
+
     enc_props.rc_mode =  ctx->rate_control_mode;
 
     switch(enc_props.rc_mode) {
@@ -1713,6 +1518,12 @@ static av_cold int mpsoc_vcu_encode_init(AVCodecContext *avctx)
     ctx->enc_params[enc_props.param_cnt].type   = XMA_UINT32;
     ctx->enc_params[enc_props.param_cnt].length = sizeof(ctx->latency_logging);
     ctx->enc_params[enc_props.param_cnt].value  = &(ctx->latency_logging);
+    enc_props.param_cnt++;
+
+    ctx->enc_params[enc_props.param_cnt].name   = "disable_pipeline";
+    ctx->enc_params[enc_props.param_cnt].type   = XMA_UINT32;
+    ctx->enc_params[enc_props.param_cnt].length = sizeof(ctx->disable_pipeline);
+    ctx->enc_params[enc_props.param_cnt].value  = &(ctx->disable_pipeline);
     enc_props.param_cnt++;
 
     if (!avctx->extradata_size) {

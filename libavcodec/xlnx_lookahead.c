@@ -29,7 +29,7 @@
 #include "../xmaPropsTOjson.h"
 
 //From #include "xlnx_la_plg_ext.h"
-#define XLNX_LA_PLG_NUM_EXT_PARAMS 10
+#define XLNX_LA_PLG_NUM_EXT_PARAMS 11
 #define XRM_PRECISION_1000000_BIT_MASK(load) ((load << 8))
 
 typedef enum
@@ -43,7 +43,8 @@ typedef enum
     EParamSpatialAQGain,
     EParamNumBFrames,
     EParamCodecType,
-    EParamLatencyLogging
+    EParamLatencyLogging,
+    EParamDynamicGop
 } xlnx_la_ext_params_t;
 
 static const char *XLNX_LA_EXT_PARAMS[] = {
@@ -56,7 +57,8 @@ static const char *XLNX_LA_EXT_PARAMS[] = {
     "spatial_aq_gain",
     "num_b_frames",
     "codec_type",
-    "latency_logging"
+    "latency_logging",
+    "dynamic_gop"
 };
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -461,6 +463,13 @@ xlnx_lookahead_t create_xlnx_la(xlnx_la_cfg_t *cfg)
     extn_params[param_cnt].type = XMA_UINT32;
     extn_params[param_cnt].length = sizeof(int);
     extn_params[param_cnt].value = &cfg->latency_logging;
+    param_cnt++;
+
+    extn_params[param_cnt].name = (char *)XLNX_LA_EXT_PARAMS[EParamDynamicGop];
+    extn_params[param_cnt].user_type = EParamDynamicGop;
+    extn_params[param_cnt].type = XMA_UINT32;
+    extn_params[param_cnt].length = sizeof(int);
+    extn_params[param_cnt].value = &cfg->dynamic_gop;
     param_cnt++;
 
     filter_props.param_cnt = param_cnt;

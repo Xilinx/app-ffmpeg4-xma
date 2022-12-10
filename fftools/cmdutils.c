@@ -833,6 +833,10 @@ int split_commandline(OptionParseContext *octx, int argc, char *argv[],
         }        
         else if((strcmp(opt,"-lxlnx_hwdev") == 0) || (strcmp(opt,"-xlnx_hwdev") == 0))
         {
+           if(optindex >= argc)  {
+                av_log(NULL, AV_LOG_ERROR, "No device ID suppled to Xilinx device command line options.\n");
+                return AVERROR(EINVAL);
+           }
            dev_id = atoi(argv[optindex]);
            if ((dev_id >= 0) && (dev_id < MAX_XLNX_DEVS)) { 
               if (dev_list[dev_id] == false)

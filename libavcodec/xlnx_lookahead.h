@@ -45,6 +45,7 @@ typedef struct
     uint32_t           rate_control_mode;
     uint32_t           spatial_aq_gain;
     uint32_t           b_frames;
+    uint32_t           dynamic_gop;
     XmaFormatType      fmt_type;
     XmaFraction        framerate;
     xlnx_codec_type_t  codec_type;

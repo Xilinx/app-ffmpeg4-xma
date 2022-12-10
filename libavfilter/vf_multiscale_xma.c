@@ -313,11 +313,11 @@ static int _allocate_xrm_scaler_cu(AVFilterContext *ctx, XmaScalerProperties *pr
     int32_t scal_load=0, func_id = 0;
     int ret = -1;
     int xrm_reserve_id = -1;
-    char* endptr;    
+    char* endptr;
 
     uint64_t deviceInfoDeviceIndex = 0;
     uint64_t deviceInfoContraintType = XRM_DEVICE_INFO_CONSTRAINT_TYPE_HARDWARE_DEVICE_INDEX;
-	
+
     MultiScalerContext  *s = ctx->priv;
     xrmCuPropertyV2 scalerCuProp;
 
@@ -344,31 +344,30 @@ static int _allocate_xrm_scaler_cu(AVFilterContext *ctx, XmaScalerProperties *pr
     scalerCuProp.devExcl     = false;
     scalerCuProp.requestLoad = XRM_PRECISION_1000000_BIT_MASK(scal_load);
 
-    if ((s->lxlnx_hwdev > -1) && (xrm_reserve_id > -1)) //2dev mode launcher
-    {
+    if ((s->lxlnx_hwdev > -1) && (xrm_reserve_id > -1)) { //2dev mode launcher
         deviceInfoDeviceIndex = s->lxlnx_hwdev;
-        scalerCuProp.deviceInfo = (deviceInfoDeviceIndex << XRM_DEVICE_INFO_DEVICE_INDEX_SHIFT) | (deviceInfoContraintType << XRM_DEVICE_INFO_CONSTRAINT_TYPE_SHIFT);
+        scalerCuProp.deviceInfo = (deviceInfoDeviceIndex << XRM_DEVICE_INFO_DEVICE_INDEX_SHIFT) | 
+                                  (deviceInfoContraintType << XRM_DEVICE_INFO_CONSTRAINT_TYPE_SHIFT);
         scalerCuProp.poolId = xrm_reserve_id;
     }
-    else if (xrm_reserve_id > -1) //1dev mode launcher
-    {
-        scalerCuProp.poolId = xrm_reserve_id;	
-    }		
-    else if (s->lxlnx_hwdev > -1) //explicit ffmpeg local  device command
-    {
-        deviceInfoDeviceIndex = s->lxlnx_hwdev;
-        scalerCuProp.deviceInfo = (deviceInfoDeviceIndex << XRM_DEVICE_INFO_DEVICE_INDEX_SHIFT) | (deviceInfoContraintType << XRM_DEVICE_INFO_CONSTRAINT_TYPE_SHIFT);	
+    else if (xrm_reserve_id > -1) { //1dev mode launcher
+        scalerCuProp.poolId = xrm_reserve_id;
     }
-    else //explicit ffmpeg global device command
-    {
-        errno = 0;        
-        deviceInfoDeviceIndex =  strtol(getenv("XRM_DEVICE_ID"), &endptr, 0);
-        if (errno != 0)
-        {
-            av_log(NULL, AV_LOG_ERROR, "Fail to use XRM_DEVICE_ID in scaler plugin\n");
-            return -1;
+    else if((s->lxlnx_hwdev > -1) || getenv("XRM_DEVICE_ID")) { //explicit ffmpeg device command
+        if(s->lxlnx_hwdev > -1) {
+            deviceInfoDeviceIndex = s->lxlnx_hwdev;
         }
-        scalerCuProp.deviceInfo = (deviceInfoDeviceIndex << XRM_DEVICE_INFO_DEVICE_INDEX_SHIFT) | (deviceInfoContraintType << XRM_DEVICE_INFO_CONSTRAINT_TYPE_SHIFT);	
+        else {
+            errno = 0;
+            deviceInfoDeviceIndex =  strtol(getenv("XRM_DEVICE_ID"), &endptr, 0);
+            if (errno != 0)
+            {
+                av_log(NULL, AV_LOG_ERROR, "Fail to use XRM_DEVICE_ID in scaler plugin\n");
+                return -1;
+            }
+        }
+        scalerCuProp.deviceInfo = (deviceInfoDeviceIndex << XRM_DEVICE_INFO_DEVICE_INDEX_SHIFT) | 
+                                  (deviceInfoContraintType << XRM_DEVICE_INFO_CONSTRAINT_TYPE_SHIFT);
     }
 
     ret = xrmCuAllocV2(s->xrm_ctx, &scalerCuProp, &s->scalerCuRes[s->xrm_scalres_count]);
